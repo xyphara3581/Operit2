@@ -163,6 +163,17 @@ jobs:
           RELEASE_KEY_PASSWORD=$env:ANDROID_RELEASE_KEY_PASSWORD
           "@ | Set-Content -Path (Join-Path $secretsDir "android-signing.properties") -Encoding utf8
 
+      - name: Install TypeScript compiler (.ci-tools)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .ci-tools/typescript | Out-Null
+          Push-Location .ci-tools/typescript
+          npm init -y | Out-Null
+          npm install typescript@5 --no-audit --no-fund
+          Pop-Location
+          $tsc = '.ci-tools/typescript/node_modules/.bin/tsc.cmd'
+          if (-not (Test-Path $tsc)) { throw "tsc.cmd missing at $tsc" }
+          & $tsc --version
       - name: Create Python venv for build hooks
         shell: pwsh
         run: |
