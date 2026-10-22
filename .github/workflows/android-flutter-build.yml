@@ -163,6 +163,13 @@ jobs:
           RELEASE_KEY_PASSWORD=$env:ANDROID_RELEASE_KEY_PASSWORD
           "@ | Set-Content -Path (Join-Path $secretsDir "android-signing.properties") -Encoding utf8
 
+      - name: Create Python venv for build hooks
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          if (-not (Test-Path '.\.venv\Scripts\python.exe')) { throw 'venv python missing' }
+          .\.venv\Scripts\python.exe plugins/tools/sync_plugin_packages.py --help
       - name: Check build environment
         shell: pwsh
         run: python tools/build_scripts/check_build_environment.py --products app --github-runner
