@@ -1,0 +1,155 @@
+name: Plugin Pack Test (lightweight)
+
+# 轻量诊断 workflow：只验证插件打包，不碰 Rust / Flutter / Gradle。
+# 设计要点：
+#   1) A/B 对照 —— 先在不 enable corepack 的情况下跑一次（复现主 workflow 的失败），
+#      再 enable 后跑一次（验证修复）。一轮就能证明根因假设真伪。
+#   2) 遍历所有插件包，不 fail-fast，失败全部汇总到 Step Summary。
+#   3) 全程 $ErrorActionPreference='Continue'，避免 stderr 被当异常吞掉。
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'ab = 先 baseline 再修复；fixed = 只跑修复后'
+        required: false
+        default: 'ab'
+        type: choice
+        options:
+          - ab
+          - fixed
+
+jobs:
+  plugin-pack:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Baseline environment probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "node: $(node --version)"
+          $cp = Get-Command corepack -ErrorAction SilentlyContinue
+          if ($null -eq $cp) { Write-Host 'COREPACK_MISSING' } else { Write-Host "corepack: $(corepack --version)" }
+          $pn = Get-Command pnpm -ErrorAction SilentlyContinue
+          if ($null -eq $pn) {
+            Write-Host 'BASELINE_RESULT: pnpm NOT in PATH'
+            "BASELINE pnpm in PATH: **NO**" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          } else {
+            Write-Host "BASELINE_RESULT: pnpm at $($pn.Source)"
+            "BASELINE pnpm in PATH: **YES** at $($pn.Source)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+      - name: Install plugin deps (all packages, no fail-fast)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dirs = Get-ChildItem -Path plugins/packages/buildin -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'package.json') }
+          Write-Host "found $($dirs.Count) plugin package(s)"
+          $rows = @()
+          foreach ($d in $dirs) {
+            Write-Host "=== install: $($d.Name) ==="
+            Push-Location $d.FullName
+            corepack pnpm install --frozen-lockfile *>&1 | Out-String | Write-Host
+            $code = $LASTEXITCODE
+            if ($code -eq 0 -and (Test-Path 'node_modules/esbuild/install.js')) {
+              Write-Host 'esbuild postinstall (pnpm10 blocks build scripts)'
+              node node_modules/esbuild/install.js *>&1 | Out-String | Write-Host
+            }
+            Pop-Location
+            $rows += "| $($d.Name) | install | $code |"
+          }
+          "## Install results" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "| package | step | exit |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "|---|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $rows | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: "PACK A: baseline (no corepack enable)"
+        if: ${{ github.event.inputs.mode == 'ab' || github.event.inputs.mode == '' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Push-Location plugins/packages/buildin/workflow
+          Write-Host '--- running: corepack pnpm run pack:toolpkg (baseline) ---'
+          $out = & corepack pnpm run pack:toolpkg *>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host "exit=$code"
+          Write-Host $out
+          "## PACK A baseline (no corepack enable)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "exit code: **$code**" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $out.Substring(0, [Math]::Min(3000, $out.Length)) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $hint = if ($out -match 'is not recognized') { 'MATCHED pnpm-not-recognized' } else { 'no pnpm-not-recognized string' }
+          Write-Host "BASELINE_HINT: $hint"
+          Pop-Location
+
+      - name: Enable corepack pnpm shim
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '--- corepack enable pnpm ---'
+          corepack enable pnpm
+          Write-Host "enable exit=$LASTEXITCODE"
+          corepack prepare pnpm@10.7.0 --activate
+          Write-Host "prepare exit=$LASTEXITCODE"
+          $after = Get-Command pnpm -ErrorAction SilentlyContinue
+          if ($null -eq $after) { throw 'pnpm STILL not in PATH after corepack enable' }
+          Write-Host "pnpm path: $($after.Source)"
+          pnpm --version
+          "## After corepack enable: pnpm at $($after.Source)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: "PACK B: after fix (all packages, no fail-fast)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dirs = Get-ChildItem -Path plugins/packages/buildin -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'package.json') }
+          $rows = @()
+          $fail = 0
+          foreach ($d in $dirs) {
+            Write-Host "=== pack: $($d.Name) ==="
+            Push-Location $d.FullName
+            $hasPack = $false
+            try {
+              $pj = Get-Content package.json -Raw | ConvertFrom-Json
+              if ($pj.scripts.PSObject.Properties.Name -contains 'pack:toolpkg') { $hasPack = $true }
+            } catch { }
+            if (-not $hasPack) {
+              Write-Host "SKIP: no pack:toolpkg script"
+              Pop-Location
+              $rows += "| $($d.Name) | pack | skipped |"
+              continue
+            }
+            $out = & corepack pnpm run pack:toolpkg *>&1 | Out-String
+            $code = $LASTEXITCODE
+            Write-Host "exit=$code"
+            Write-Host $out
+            Pop-Location
+            if ($code -ne 0) { $fail++ }
+            $rows += "| $($d.Name) | pack | $code |"
+          }
+          "## PACK B results (after corepack enable)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "| package | step | exit |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "|---|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $rows | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-Host "TOTAL FAILURES: $fail"
+          "**TOTAL FAILURES: $fail**" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($fail -gt 0) { throw "$fail plugin package(s) failed to pack" }
+          Write-Host 'ALL PLUGIN PACKAGES PACKED OK'
+
+      - name: Verify artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '=== *.toolpkg produced ==='
+          Get-ChildItem -Path plugins -Recurse -Filter *.toolpkg -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "  $($_.FullName)  $($_.Length) bytes"
+          }
