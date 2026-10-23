@@ -3,6 +3,9 @@ name: Android Flutter Build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - agent/fix-android-shell-exitcode-timeout
 
 permissions:
   contents: read
