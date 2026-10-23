@@ -86,9 +86,10 @@ type AndroidPtyCursorState = Arc<Mutex<AndroidPtyCursor>>;
 impl Drop for AndroidPtySession {
     fn drop(&mut self) {
         #[cfg(target_os = "android")]
-        unsafe {
-            libc::kill(self.pid, libc::SIGHUP);
-            libc::kill(self.pid, libc::SIGKILL);
+        {
+            // A PTY child is a session/process-group leader. Clean up descendants
+            // even if a prior poll already reaped the shell leader.
+            terminateAndroidPtyProcessGroup(self.pid, self.exitCode.is_some());
             let fd = match self.writer.lock() {
                 Ok(mut writerFd) => {
                     let value = *writerFd;
@@ -98,7 +99,9 @@ impl Drop for AndroidPtySession {
                 Err(_) => self.masterFd,
             };
             if fd >= 0 {
-                libc::close(fd);
+                unsafe {
+                    libc::close(fd);
+                }
             }
         }
     }
@@ -329,7 +332,11 @@ impl TerminalHost for AndroidTerminalHost {
         {
             let mut state = self.lockState()?;
             if let Some(sessionId) = state.sessionNameToId.get(&key).cloned() {
-                if state.ptySessions.contains_key(&sessionId) {
+                let exitCode = match state.ptySessions.get_mut(&sessionId) {
+                    Some(session) => refreshAndroidPtySessionExitCode(session)?,
+                    None => Some(-1),
+                };
+                if exitCode.is_none() {
                     return Ok(TerminalSessionInfo {
                         sessionId,
                         sessionName: normalizedSessionName,
@@ -339,7 +346,13 @@ impl TerminalHost for AndroidTerminalHost {
                         isNewSession: false,
                     });
                 }
-                state.sessionNameToId.remove(&key);
+
+                androidLogInfo(&format!(
+                    "Replacing exited Android PTY session id={sessionId} exitCode={}",
+                    exitCode.unwrap_or(-1)
+                ));
+                state.ptySessions.remove(&sessionId);
+                removeAndroidSessionMappings(&mut state, &sessionId);
             }
         }
 
@@ -383,8 +396,25 @@ impl TerminalHost for AndroidTerminalHost {
     ) -> HostResult<TerminalCommandOutput> {
         let normalizedSessionId = nonBlank(sessionId, "session_id")?;
         let normalizedCommand = nonBlank(command, "command")?;
-        let (terminalType, commandOutput) = {
+        let (terminalType, commandOutput, sessionPid) = {
             let mut state = self.lockState()?;
+            let exitCode = {
+                let session = state
+                    .ptySessions
+                    .get_mut(&normalizedSessionId)
+                    .ok_or_else(|| {
+                        HostError::new(format!("Terminal session does not exist: {sessionId}"))
+                    })?;
+                refreshAndroidPtySessionExitCode(session)?
+            };
+            if let Some(exitCode) = exitCode {
+                state.ptySessions.remove(&normalizedSessionId);
+                removeAndroidSessionMappings(&mut state, &normalizedSessionId);
+                return Err(HostError::new(format!(
+                    "Terminal session has exited (exitCode={exitCode}); create a new session"
+                )));
+            }
+
             let session = state
                 .ptySessions
                 .get_mut(&normalizedSessionId)
@@ -400,31 +430,68 @@ impl TerminalHost for AndroidTerminalHost {
             let commandInput = format!("{normalizedCommand}\r");
             writeAndroidPtyBytes(&session.writer, commandInput.as_bytes())?;
             session.commandRunning = true;
-            (session.terminalType.clone(), session.commandOutput.clone())
+            (
+                session.terminalType.clone(),
+                session.commandOutput.clone(),
+                session.pid,
+            )
         };
-        let result = executeAndroidPtyCommandInSession(
+        let mut result = executeAndroidPtyCommandInSession(
             commandOutput,
             &normalizedCommand,
+            sessionPid,
             timeoutMs,
             onOutput,
         );
+        let processExited = result
+            .as_ref()
+            .map_or(false, |receipt| !receipt.timedOut && receipt.workingDir.is_none());
         {
             let mut state = self.lockState()?;
+            let mut discardSession = false;
             if let Some(session) = state.ptySessions.get_mut(&normalizedSessionId) {
-                // Release the busy flag even if interrupting a broken PTY fails.
-                // The state lock still excludes new commands during cancellation.
-                session.commandRunning = false;
-                if result.as_ref().map_or(true, |receipt| receipt.timedOut) {
-                    if let Some(workingDir) = cancelTimedOutAndroidPtyCommand(session)? {
+                if processExited {
+                    // The wait loop has observed/reaped the shell process. Preserve its status
+                    // and discard the dead PTY rather than reporting an artificial timeout.
+                    let observedExit = result.as_ref().map_or(-1, |receipt| receipt.exitCode);
+                    session.exitCode = session.exitCode.or(Some(observedExit));
+                    if let Ok(receipt) = &mut result {
+                        receipt.exitCode = session.exitCode.unwrap_or(observedExit);
+                    }
+                    discardSession = true;
+                } else if result.as_ref().map_or(true, |receipt| receipt.timedOut) {
+                    // Keep the state lock during cancellation so no new command can be
+                    // queued until the PTY has either returned to a prompt or been discarded.
+                    match cancelTimedOutAndroidPtyCommand(session) {
+                        Ok(Some(workingDir)) => {
+                            session.workingDir = workingDir;
+                            session.commandRunning = false;
+                        }
+                        Ok(None) => {
+                            androidLogError(&format!(
+                                "PTY timeout did not restore prompt; discarding session id={normalizedSessionId} pid={}",
+                                session.pid
+                            ));
+                            discardSession = true;
+                        }
+                        Err(error) => {
+                            androidLogError(&format!(
+                                "PTY timeout cancellation failed; discarding session id={normalizedSessionId}: {error}"
+                            ));
+                            discardSession = true;
+                        }
+                    }
+                } else {
+                    session.commandRunning = false;
+                    if let Some(workingDir) = result.as_ref().ok().and_then(|receipt| receipt.workingDir.clone()) {
                         session.workingDir = workingDir;
                     }
-                } else if let Some(workingDir) = result
-                    .as_ref()
-                    .ok()
-                    .and_then(|receipt| receipt.workingDir.clone())
-                {
-                    session.workingDir = workingDir;
                 }
+            }
+            if discardSession {
+                // Dropping the PTY kills the process group and reaps the shell leader if needed.
+                state.ptySessions.remove(&normalizedSessionId);
+                removeAndroidSessionMappings(&mut state, &normalizedSessionId);
             }
         }
         let result = result?;
@@ -562,10 +629,19 @@ fn hiddenAndroidPtySessionId(
     {
         let mut state = host.lockState()?;
         if let Some(sessionId) = state.hiddenExecutorKeyToSessionId.get(executorKey).cloned() {
-            if state.ptySessions.contains_key(&sessionId) {
+            let exitCode = match state.ptySessions.get_mut(&sessionId) {
+                Some(session) => refreshAndroidPtySessionExitCode(session)?,
+                None => Some(-1),
+            };
+            if exitCode.is_none() {
                 return Ok(sessionId);
             }
-            state.hiddenExecutorKeyToSessionId.remove(executorKey);
+
+            androidLogInfo(&format!(
+                "Replacing exited hidden Android PTY session id={sessionId} exitCode={}",
+                exitCode.unwrap_or(-1)
+            ));
+            state.ptySessions.remove(&sessionId);
             removeAndroidSessionMappings(&mut state, &sessionId);
         }
     }
@@ -846,6 +922,7 @@ fn androidPtyLogSnippet(data: &[u8]) -> String {
 fn executeAndroidPtyCommandInSession(
     output: AndroidPtyCommandOutput,
     command: &str,
+    pid: AndroidPid,
     timeoutMs: u64,
     onOutput: &mut dyn FnMut(&[u8]) -> HostResult<()>,
 ) -> HostResult<AndroidSessionCommandResult> {
@@ -875,6 +952,17 @@ fn executeAndroidPtyCommandInSession(
                 exitCode: marker.exitCode,
                 timedOut: false,
                 workingDir: Some(marker.workingDir),
+            });
+        }
+        // A command such as "exit 42" terminates the interactive shell instead of
+        // printing a prompt marker. Poll the child so this is reported as an exit, not timeout.
+        if let Some(exitCode) = pollPidExitCode(pid)? {
+            let output = androidPtyTimedOutCommandOutputText(&collected, command);
+            return Ok(AndroidSessionCommandResult {
+                output,
+                exitCode,
+                timedOut: false,
+                workingDir: None,
             });
         }
         if Instant::now() >= deadline {
@@ -1329,13 +1417,33 @@ fn writeAndroidPtyBytes(writer: &Arc<Mutex<RawFd>>, data: &[u8]) -> HostResult<u
     writePtyFd(fd, data)
 }
 
+#[cfg(unix)]
+fn terminateAndroidPtyProcessGroup(pid: libc::pid_t, leaderAlreadyReaped: bool) {
+    if pid <= 0 {
+        return;
+    }
+    unsafe {
+        // forkpty makes the child its own session/process-group leader. Always
+        // clean up the group; only signal/reap the leader if waitpid has not done so.
+        let _ = libc::kill(-pid, libc::SIGHUP);
+        if !leaderAlreadyReaped {
+            let _ = libc::kill(pid, libc::SIGHUP);
+        }
+        let _ = libc::kill(-pid, libc::SIGKILL);
+        if !leaderAlreadyReaped {
+            let _ = libc::kill(pid, libc::SIGKILL);
+            let mut status: libc::c_int = 0;
+            let _ = libc::waitpid(pid, &mut status, 0);
+        }
+    }
+}
+
 fn closeAndroidPtyProcess(pid: AndroidPid, fd: RawFd) {
     #[cfg(target_os = "android")]
-    unsafe {
-        libc::kill(pid, libc::SIGHUP);
-        libc::kill(pid, libc::SIGKILL);
+    {
+        terminateAndroidPtyProcessGroup(pid, false);
         if fd >= 0 {
-            libc::close(fd);
+            unsafe { libc::close(fd); }
         }
     }
 
@@ -1621,6 +1729,20 @@ fn buildAndroidBashPtyCommand(workingDir: &str) -> HostResult<AndroidPtyCommand>
     })
 }
 
+/// Returns the persistent Android system-shell loop.
+fn androidSystemShellCommandText() -> &'static str {
+    // Capture eval's status immediately. At the beginning of a "while true" body,
+    // "$?" is the status of the loop condition (0), not the previous command.
+    r#"cd "$OPERIT_WORKING_DIR" || exit 1
+__operit_status=0
+while true; do
+  printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status"
+  IFS= read -r __operit_command || exit 0
+  eval "$__operit_command"
+  __operit_status=$?
+done"#
+}
+
 /// Builds the PTY startup command for Android system shell.
 fn buildAndroidShellPtyCommand(workingDir: &str) -> HostResult<AndroidPtyCommand> {
     let runtimeDir = requiredAndroidRuntimePath("OPERIT_ANDROID_RUNTIME_DIR")?;
@@ -1638,7 +1760,7 @@ fn buildAndroidShellPtyCommand(workingDir: &str) -> HostResult<AndroidPtyCommand
         nativeLibraryDir.to_string_lossy(),
         runtimeDir.to_string_lossy()
     );
-    let commandText = r#"cd "$OPERIT_WORKING_DIR" && while true; do __operit_status=$?; printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status"; IFS= read -r __operit_command || exit 0; eval "$__operit_command"; done"#;
+    let commandText = androidSystemShellCommandText();
     let shell = Path::new("/system/bin/sh");
     let argv = vec![cstringPath(shell)?, cstring("-c")?, cstring(commandText)?];
     let envp = vec![
@@ -1901,16 +2023,23 @@ fn setPtyWindowSize(fd: RawFd, rows: u16, cols: u16) -> HostResult<()> {
     }
 }
 
+fn refreshAndroidPtySessionExitCode(
+    session: &mut AndroidPtySession,
+) -> HostResult<Option<i32>> {
+    if session.exitCode.is_none() {
+        session.exitCode = pollPidExitCode(session.pid)?;
+    }
+    Ok(session.exitCode)
+}
+
 fn pollPidExitCode(pid: AndroidPid) -> HostResult<Option<i32>> {
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(unix))]
     {
         let _ = pid;
-        return Err(HostError::new(
-            "Android PTY is only available on Android target",
-        ));
+        return Err(HostError::new("PTY process polling is only supported on Unix"));
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(unix)]
     {
         let mut status: libc::c_int = 0;
         let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
@@ -1918,8 +2047,14 @@ fn pollPidExitCode(pid: AndroidPid) -> HostResult<Option<i32>> {
             return Ok(None);
         }
         if result < 0 {
-            androidLogError(&format!("waitpid failed pid={pid}"));
-            return Err(HostError::new("waitpid failed for Android PTY"));
+            let error = std::io::Error::last_os_error();
+            // Another status observer may already have reaped the child. Report the
+            // session as exited; the owning session record retains the exact code.
+            if error.raw_os_error() == Some(libc::ECHILD) {
+                return Ok(Some(-1));
+            }
+            androidLogError(&format!("waitpid failed pid={pid}: {error}"));
+            return Err(HostError::new(format!("waitpid failed for PTY process: {error}")));
         }
         if libc::WIFEXITED(status) {
             return Ok(Some(libc::WEXITSTATUS(status)));
@@ -1998,6 +2133,99 @@ mod tests {
             "Unsupported Android terminal type: powershell"
         );
         assert!(host.lockState().unwrap().ptySessions.is_empty());
+    }
+
+    /// The system shell reports the previous command's status, not "while true"'s status.
+    #[cfg(unix)]
+    #[test]
+    fn system_shell_prompt_preserves_command_exit_code() {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(androidSystemShellCommandText())
+            .env("OPERIT_WORKING_DIR", std::env::current_dir().unwrap())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start test shell");
+        let mut input = child.stdin.take().expect("test shell stdin");
+        input.write_all(b"false\n").expect("write test command");
+        drop(input);
+
+        let output = child.wait_with_output().expect("wait for test shell");
+        assert!(output.status.success());
+        let marker = findLastAndroidPtyPromptMarker(&output.stdout)
+            .expect("parse shell prompt marker")
+            .expect("shell emitted a prompt marker after false");
+        assert_eq!(marker.exitCode, 1);
+    }
+
+    /// Killing a PTY process group also stops a descendant that would otherwise act later.
+    #[cfg(unix)]
+    #[test]
+    fn pty_process_group_cleanup_stops_descendant_side_effects() {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let marker = std::env::temp_dir().join(format!(
+            "operit-pty-group-{}.txt",
+            nextTerminalId()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg(r#"sleep 1; printf side-effect > "$OPERIT_TEST_MARKER""#)
+            .env("OPERIT_TEST_MARKER", &marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("start PTY process-group fixture");
+
+        // Let the shell start its foreground sleep before killing the whole group.
+        thread::sleep(Duration::from_millis(100));
+        terminateAndroidPtyProcessGroup(child.id() as libc::pid_t, false);
+        // The helper reaps the leader; Child::drop does not perform another wait.
+        drop(child);
+        thread::sleep(Duration::from_millis(1100));
+        assert!(!marker.exists(), "descendant performed a delayed side effect");
+    }
+
+    /// An explicit shell exit is reported promptly with its real status, not as a timeout.
+    #[cfg(unix)]
+    #[test]
+    fn exited_shell_returns_exit_code_without_timeout() {
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exit 42")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start exiting shell fixture");
+        let output: AndroidPtyCommandOutput =
+            Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
+        let started = Instant::now();
+        let result = executeAndroidPtyCommandInSession(
+            output,
+            "exit 42",
+            child.id() as AndroidPid,
+            2_000,
+            &mut |_| Ok(()),
+        )
+        .expect("observe shell exit");
+        assert!(!result.timedOut);
+        assert_eq!(result.exitCode, 42);
+        assert!(result.workingDir.is_none());
+        assert!(started.elapsed() < Duration::from_millis(1_000));
+        // pollPidExitCode reaps the process; Child::drop will not wait a second time.
+        drop(child);
     }
 
     /// Rejects an empty explicit interpreter instead of creating the default proot session.
