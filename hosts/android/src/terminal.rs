@@ -86,9 +86,13 @@ type AndroidPtyCursorState = Arc<Mutex<AndroidPtyCursor>>;
 impl Drop for AndroidPtySession {
     fn drop(&mut self) {
         #[cfg(target_os = "android")]
-        unsafe {
-            libc::kill(self.pid, libc::SIGHUP);
-            libc::kill(self.pid, libc::SIGKILL);
+        {
+            // A PTY child is a session/process-group leader. Killing only the
+            // shell PID can leave a foreground child (for example, sleep) alive.
+            // Skip signaling when waitpid has already reaped the leader.
+            if self.exitCode.is_none() {
+                terminateAndroidPtyProcessGroup(self.pid);
+            }
             let fd = match self.writer.lock() {
                 Ok(mut writerFd) => {
                     let value = *writerFd;
@@ -402,17 +406,41 @@ impl TerminalHost for AndroidTerminalHost {
             executeAndroidPtyCommandInSession(commandOutput, &normalizedCommand, timeoutMs, onOutput);
         {
             let mut state = self.lockState()?;
+            let mut discardSession = false;
             if let Some(session) = state.ptySessions.get_mut(&normalizedSessionId) {
-                // Release the busy flag even if interrupting a broken PTY fails.
-                // The state lock still excludes new commands during cancellation.
-                session.commandRunning = false;
+                // Keep the state lock during cancellation so no new command can be
+                // queued until the PTY has either returned to a prompt or been discarded.
                 if result.as_ref().map_or(true, |receipt| receipt.timedOut) {
-                    if let Some(workingDir) = cancelTimedOutAndroidPtyCommand(session)? {
+                    match cancelTimedOutAndroidPtyCommand(session) {
+                        Ok(Some(workingDir)) => {
+                            session.workingDir = workingDir;
+                            session.commandRunning = false;
+                        }
+                        Ok(None) => {
+                            androidLogError(&format!(
+                                "PTY timeout did not restore prompt; discarding session id={normalizedSessionId} pid={}",
+                                session.pid
+                            ));
+                            discardSession = true;
+                        }
+                        Err(error) => {
+                            androidLogError(&format!(
+                                "PTY timeout cancellation failed; discarding session id={normalizedSessionId}: {error}"
+                            ));
+                            discardSession = true;
+                        }
+                    }
+                } else {
+                    session.commandRunning = false;
+                    if let Some(workingDir) = result.as_ref().ok().and_then(|receipt| receipt.workingDir.clone()) {
                         session.workingDir = workingDir;
                     }
-                } else if let Some(workingDir) = result.as_ref().ok().and_then(|receipt| receipt.workingDir.clone()) {
-                    session.workingDir = workingDir;
                 }
+            }
+            if discardSession {
+                // Dropping the PTY kills its process group and reaps the shell leader.
+                state.ptySessions.remove(&normalizedSessionId);
+                removeAndroidSessionMappings(&mut state, &normalizedSessionId);
             }
         }
         let result = result?;
@@ -1312,13 +1340,31 @@ fn writeAndroidPtyBytes(writer: &Arc<Mutex<RawFd>>, data: &[u8]) -> HostResult<u
     writePtyFd(fd, data)
 }
 
+#[cfg(unix)]
+fn terminateAndroidPtyProcessGroup(pid: libc::pid_t) {
+    if pid <= 0 {
+        return;
+    }
+    unsafe {
+        // forkpty makes the child its own session/process-group leader.
+        // Signal both the group and leader as a defensive fallback.
+        let _ = libc::kill(-pid, libc::SIGHUP);
+        let _ = libc::kill(pid, libc::SIGHUP);
+        let _ = libc::kill(-pid, libc::SIGKILL);
+        let _ = libc::kill(pid, libc::SIGKILL);
+
+        // Reap the PTY leader when this host owns its wait status.
+        let mut status: libc::c_int = 0;
+        let _ = libc::waitpid(pid, &mut status, 0);
+    }
+}
+
 fn closeAndroidPtyProcess(pid: AndroidPid, fd: RawFd) {
     #[cfg(target_os = "android")]
-    unsafe {
-        libc::kill(pid, libc::SIGHUP);
-        libc::kill(pid, libc::SIGKILL);
+    {
+        terminateAndroidPtyProcessGroup(pid);
         if fd >= 0 {
-            libc::close(fd);
+            unsafe { libc::close(fd); }
         }
     }
 
@@ -1604,6 +1650,20 @@ fn buildAndroidBashPtyCommand(workingDir: &str) -> HostResult<AndroidPtyCommand>
     })
 }
 
+/// Returns the persistent Android system-shell loop.
+fn androidSystemShellCommandText() -> &'static str {
+    // Capture eval's status immediately. At the beginning of a "while true" body,
+    // "$?" is the status of the loop condition (0), not the previous command.
+    r#"cd "$OPERIT_WORKING_DIR" || exit 1
+__operit_status=0
+while true; do
+  printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status"
+  IFS= read -r __operit_command || exit 0
+  eval "$__operit_command"
+  __operit_status=$?
+done"#
+}
+
 /// Builds the PTY startup command for Android system shell.
 fn buildAndroidShellPtyCommand(workingDir: &str) -> HostResult<AndroidPtyCommand> {
     let runtimeDir = requiredAndroidRuntimePath("OPERIT_ANDROID_RUNTIME_DIR")?;
@@ -1621,7 +1681,7 @@ fn buildAndroidShellPtyCommand(workingDir: &str) -> HostResult<AndroidPtyCommand
         nativeLibraryDir.to_string_lossy(),
         runtimeDir.to_string_lossy()
     );
-    let commandText = r#"cd "$OPERIT_WORKING_DIR" && while true; do __operit_status=$?; printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status"; IFS= read -r __operit_command || exit 0; eval "$__operit_command"; done"#;
+    let commandText = androidSystemShellCommandText();
     let shell = Path::new("/system/bin/sh");
     let argv = vec![cstringPath(shell)?, cstring("-c")?, cstring(commandText)?];
     let envp = vec![
@@ -1971,6 +2031,66 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.message, "Unsupported Android terminal type: powershell");
         assert!(host.lockState().unwrap().ptySessions.is_empty());
+    }
+
+    /// The system shell reports the previous command's status, not "while true"'s status.
+    #[cfg(unix)]
+    #[test]
+    fn system_shell_prompt_preserves_command_exit_code() {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(androidSystemShellCommandText())
+            .env("OPERIT_WORKING_DIR", std::env::current_dir().unwrap())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start test shell");
+        let mut input = child.stdin.take().expect("test shell stdin");
+        input.write_all(b"false\\n").expect("write test command");
+        drop(input);
+
+        let output = child.wait_with_output().expect("wait for test shell");
+        assert!(output.status.success());
+        let marker = findLastAndroidPtyPromptMarker(&output.stdout)
+            .expect("parse shell prompt marker")
+            .expect("shell emitted a prompt marker after false");
+        assert_eq!(marker.exitCode, 1);
+    }
+
+    /// Killing a PTY process group also stops a descendant that would otherwise act later.
+    #[cfg(unix)]
+    #[test]
+    fn pty_process_group_cleanup_stops_descendant_side_effects() {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let marker = std::env::temp_dir().join(format!(
+            "operit-pty-group-{}.txt",
+            nextTerminalId()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 1; printf side-effect > \\"$OPERIT_TEST_MARKER\\"")
+            .env("OPERIT_TEST_MARKER", &marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("start PTY process-group fixture");
+
+        // Let the child spawn its foreground sleep before killing the whole group.
+        thread::sleep(Duration::from_millis(100));
+        terminateAndroidPtyProcessGroup(child.id() as libc::pid_t);
+        // The helper reaps the leader; avoid asking std::process::Child to wait twice.
+        drop(child);
+        thread::sleep(Duration::from_millis(1100));
+        assert!(!marker.exists(), "descendant performed a delayed side effect");
     }
 
     /// Rejects an empty explicit interpreter instead of creating the default proot session.
