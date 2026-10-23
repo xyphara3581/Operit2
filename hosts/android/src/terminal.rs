@@ -335,7 +335,11 @@ impl TerminalHost for AndroidTerminalHost {
         {
             let mut state = self.lockState()?;
             if let Some(sessionId) = state.sessionNameToId.get(&key).cloned() {
-                if state.ptySessions.contains_key(&sessionId) {
+                let exitCode = match state.ptySessions.get_mut(&sessionId) {
+                    Some(session) => refreshAndroidPtySessionExitCode(session)?,
+                    None => Some(-1),
+                };
+                if exitCode.is_none() {
                     return Ok(TerminalSessionInfo {
                         sessionId,
                         sessionName: normalizedSessionName,
@@ -345,7 +349,13 @@ impl TerminalHost for AndroidTerminalHost {
                         isNewSession: false,
                     });
                 }
-                state.sessionNameToId.remove(&key);
+
+                androidLogInfo(&format!(
+                    "Replacing exited Android PTY session id={sessionId} exitCode={}",
+                    exitCode.unwrap_or(-1)
+                ));
+                state.ptySessions.remove(&sessionId);
+                removeAndroidSessionMappings(&mut state, &sessionId);
             }
         }
 
@@ -391,13 +401,34 @@ impl TerminalHost for AndroidTerminalHost {
         let normalizedCommand = nonBlank(command, "command")?;
         let (terminalType, commandOutput) = {
             let mut state = self.lockState()?;
+            let exitCode = {
+                let session = state
+                    .ptySessions
+                    .get_mut(&normalizedSessionId)
+                    .ok_or_else(|| {
+                        HostError::new(format!("Terminal session does not exist: {sessionId}"))
+                    })?;
+                refreshAndroidPtySessionExitCode(session)?
+            };
+            if let Some(exitCode) = exitCode {
+                state.ptySessions.remove(&normalizedSessionId);
+                removeAndroidSessionMappings(&mut state, &normalizedSessionId);
+                return Err(HostError::new(format!(
+                    "Terminal session has exited (exitCode={exitCode}); create a new session"
+                )));
+            }
+
             let session = state
                 .ptySessions
                 .get_mut(&normalizedSessionId)
                 .ok_or_else(|| {
                     HostError::new(format!("Terminal session does not exist: {sessionId}"))
                 })?;
-            if session.commandRunning { return Err(HostError::new("Terminal session already has a command in progress")); }
+            if session.commandRunning {
+                return Err(HostError::new(
+                    "Terminal session already has a command in progress",
+                ));
+            }
             clearAndroidPtyCommandOutput(&session.commandOutput)?;
             let commandInput = format!("{normalizedCommand}\r");
             writeAndroidPtyBytes(&session.writer, commandInput.as_bytes())?;
@@ -580,10 +611,19 @@ fn hiddenAndroidPtySessionId(
     {
         let mut state = host.lockState()?;
         if let Some(sessionId) = state.hiddenExecutorKeyToSessionId.get(executorKey).cloned() {
-            if state.ptySessions.contains_key(&sessionId) {
+            let exitCode = match state.ptySessions.get_mut(&sessionId) {
+                Some(session) => refreshAndroidPtySessionExitCode(session)?,
+                None => Some(-1),
+            };
+            if exitCode.is_none() {
                 return Ok(sessionId);
             }
-            state.hiddenExecutorKeyToSessionId.remove(executorKey);
+
+            androidLogInfo(&format!(
+                "Replacing exited hidden Android PTY session id={sessionId} exitCode={}",
+                exitCode.unwrap_or(-1)
+            ));
+            state.ptySessions.remove(&sessionId);
             removeAndroidSessionMappings(&mut state, &sessionId);
         }
     }
@@ -1944,6 +1984,15 @@ fn setPtyWindowSize(fd: RawFd, rows: u16, cols: u16) -> HostResult<()> {
         }
         Ok(())
     }
+}
+
+fn refreshAndroidPtySessionExitCode(
+    session: &mut AndroidPtySession,
+) -> HostResult<Option<i32>> {
+    if session.exitCode.is_none() {
+        session.exitCode = pollPidExitCode(session.pid)?;
+    }
+    Ok(session.exitCode)
 }
 
 fn pollPidExitCode(pid: AndroidPid) -> HostResult<Option<i32>> {
