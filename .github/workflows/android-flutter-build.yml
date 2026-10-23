@@ -182,7 +182,7 @@ jobs:
           foreach ($d in $dirs) {
             Write-Host "=== pnpm install: $($d.Name) ==="
             Push-Location $d.FullName
-            corepack pnpm install --ignore-scripts
+            corepack pnpm install --frozen-lockfile
             $code = $LASTEXITCODE
             Pop-Location
             if ($code -ne 0) { throw "pnpm install failed in $($d.Name) with exit $code" }
@@ -197,6 +197,23 @@ jobs:
           .\.venv\Scripts\python.exe -m pip install --upgrade pip
           if (-not (Test-Path '.\.venv\Scripts\python.exe')) { throw 'venv python missing' }
           .\.venv\Scripts\python.exe plugins/tools/sync_plugin_packages.py --help
+      - name: Diagnostic - prepack workflow toolpkg
+        shell: pwsh
+        run: |
+          Push-Location plugins/packages/buildin/workflow
+          corepack pnpm install --frozen-lockfile
+          Write-Host '--- node_modules check ---'
+          foreach ($m in @('typescript','esbuild','fflate')) {
+            $p = "node_modules/$m"
+            if (Test-Path $p) { Write-Host "OK  $m" } else { Write-Host "MISS $m" }
+          }
+          Write-Host '--- tsc version ---'
+          corepack pnpm exec tsc --version
+          Write-Host '--- running pack:toolpkg with full output ---'
+          corepack pnpm run pack:toolpkg
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code -ne 0) { throw "workflow pack:toolpkg failed with exit $code" }
       - name: Check build environment
         shell: pwsh
         run: python tools/build_scripts/check_build_environment.py --products app --github-runner
