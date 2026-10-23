@@ -8,6 +8,14 @@ name: Plugin Pack Test (lightweight)
 #   3) 全程 $ErrorActionPreference='Continue'，避免 stderr 被当异常吞掉。
 
 on:
+  push:
+    paths:
+      - '.github/workflows/plugin-pack-test.yml'
+      - 'plugins/packages/buildin/**'
+  pull_request:
+    paths:
+      - '.github/workflows/plugin-pack-test.yml'
+      - 'plugins/packages/buildin/**'
   workflow_dispatch:
     inputs:
       mode:
@@ -91,6 +99,8 @@ jobs:
           $hint = if ($out -match 'is not recognized') { 'MATCHED pnpm-not-recognized' } else { 'no pnpm-not-recognized string' }
           Write-Host "BASELINE_HINT: $hint"
           Pop-Location
+          # Baseline failure is diagnostic/expected; allow the Corepack fix and PACK B to run.
+          exit 0
 
       - name: Enable corepack pnpm shim
         shell: pwsh
