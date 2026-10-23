@@ -123,7 +123,13 @@ fn main() {
         match os.as_str() {
             "macos" | "ios" => println!("cargo:rustc-link-lib=c++"),
             "android" => {
+                // libc++_static.a carries libc++ itself, but the RTTI/vtable symbols for
+                // the standard exception classes (for example _ZTISt13runtime_error,
+                // referenced by std::runtime_error) are defined in libc++abi.a. Linking
+                // only c++_static leaves them undefined, and dlopen then fails with
+                // "cannot locate symbol _ZTISt13runtime_error".
                 println!("cargo:rustc-link-lib=c++_static");
+                println!("cargo:rustc-link-lib=c++abi");
                 println!("cargo:rustc-link-lib=log");
             }
             // ggml's Windows CPU detection reads the registry. Propagate this
