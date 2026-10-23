@@ -102,7 +102,9 @@ impl Drop for AndroidPtySession {
                 Err(_) => self.masterFd,
             };
             if fd >= 0 {
-                libc::close(fd);
+                unsafe {
+                    libc::close(fd);
+                }
             }
         }
     }
