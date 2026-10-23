@@ -17,6 +17,8 @@ class PluginTabContent extends StatelessWidget {
     required this.morePlugins,
     required this.loadIssues,
     required this.scopes,
+    required this.bundledUpdates,
+    required this.onUpdatePlugin,
     this.customizedPackageNames = const <String>{},
     required this.onMoveScope,
     required this.enabledPluginNames,
@@ -33,6 +35,8 @@ class PluginTabContent extends StatelessWidget {
   final List<core_proxy.BundledExternalPackageCandidate> morePlugins;
   final List<core_proxy.ToolPkgLoadIssue> loadIssues;
   final Map<String, String> scopes;
+  final Map<String, core_proxy.BundledExternalPackageCandidate> bundledUpdates;
+  final ValueChanged<core_proxy.BundledExternalPackageCandidate> onUpdatePlugin;
   final Set<String> customizedPackageNames;
   final ValueChanged<String> onMoveScope;
 
@@ -89,6 +93,25 @@ class PluginTabContent extends StatelessWidget {
                       : _pluginDependencyIssueMessage(plugin);
                   final item = PackageListItem(
                     key: ValueKey<String>('plugin:${plugin.packageName}'),
+                    primaryAction:
+                        bundledUpdates.containsKey(plugin.packageName)
+                        ? FilledButton.tonalIcon(
+                            key: ValueKey<String>(
+                              'bundled-update:${plugin.packageName}',
+                            ),
+                            onPressed: () => onUpdatePlugin(
+                              bundledUpdates[plugin.packageName]!,
+                            ),
+                            icon: const Icon(Icons.system_update_alt, size: 18),
+                            label: const Text('更新'),
+                            style: FilledButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                              ),
+                            ),
+                          )
+                        : null,
                     icon: Icons.extension_outlined,
                     title: toolPkgContainerDisplayName(plugin),
                     statusLabel:
@@ -137,6 +160,7 @@ class PluginTabContent extends StatelessWidget {
                   }
                   return _PluginReorderTarget(
                     plugin: plugin,
+                    scopes: scopes,
                     onReordered: onReordered,
                     child: item,
                   );
@@ -271,11 +295,13 @@ class _PluginReorderTarget extends StatelessWidget {
   /// Creates a draggable plugin card and its reorder drop target.
   const _PluginReorderTarget({
     required this.plugin,
+    required this.scopes,
     required this.onReordered,
     required this.child,
   });
 
   final core_proxy.ToolPkgContainerRuntime plugin;
+  final Map<String, String> scopes;
   final void Function(String sourcePackageName, String targetPackageName)
   onReordered;
   final Widget child;
@@ -284,43 +310,48 @@ class _PluginReorderTarget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final feedbackWidth = MediaQuery.sizeOf(context).width - 32;
-    return DragTarget<String>(
-      onWillAcceptWithDetails: (details) => details.data != plugin.packageName,
-      onAcceptWithDetails: (details) =>
-          onReordered(details.data, plugin.packageName),
-      builder: (context, candidateData, rejectedData) {
-        final isDropTarget = candidateData.isNotEmpty;
-        return LongPressDraggable<String>(
-          data: plugin.packageName,
-          delay: const Duration(milliseconds: 160),
-          hapticFeedbackOnStart: true,
-          maxSimultaneousDrags: 1,
-          feedback: Material(
-            color: Colors.transparent,
-            elevation: 8,
-            shadowColor: colorScheme.shadow,
-            child: SizedBox(
-              width: feedbackWidth,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return DragTarget<String>(
+          onWillAcceptWithDetails: (details) =>
+              details.data != plugin.packageName &&
+              scopes[details.data] == scopes[plugin.packageName],
+          onAcceptWithDetails: (details) =>
+              onReordered(details.data, plugin.packageName),
+          builder: (context, candidateData, rejectedData) {
+            final isDropTarget = candidateData.isNotEmpty;
+            return LongPressDraggable<String>(
+              data: plugin.packageName,
+              delay: const Duration(milliseconds: 160),
+              hapticFeedbackOnStart: true,
+              maxSimultaneousDrags: 1,
+              feedback: Material(
+                color: Colors.transparent,
+                elevation: 8,
+                shadowColor: colorScheme.shadow,
+                child: SizedBox(
+                  width: constraints.maxWidth,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: child,
+                  ),
+                ),
+              ),
+              childWhenDragging: child,
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: colorScheme.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(12),
+                  border: isDropTarget
+                      ? Border.all(color: colorScheme.primary, width: 2)
+                      : null,
                 ),
                 child: child,
               ),
-            ),
-          ),
-          childWhenDragging: child,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              border: isDropTarget
-                  ? Border.all(color: colorScheme.primary, width: 2)
-                  : null,
-            ),
-            child: child,
-          ),
+            );
+          },
         );
       },
     );

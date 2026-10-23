@@ -176,6 +176,8 @@ function timerRuntime() {
   const callTimers = new Set();
   const failures = [];
   const context = vm.createContext({
+    /** Receives the exact native execution owner. */
+    __operitNativeActivateCall() {},
     __operitCurrentCallId: 'owner',
     /** Records each native timer Promise under its explicit cancellation scope. */
     __operitNativeScheduleJavaScriptTimer(scope, delay) {
@@ -314,6 +316,8 @@ function ipcRuntime(native) {
   let retained = 0;
   const activations = [];
   const context = vm.createContext({
+    /** Receives the exact native execution owner. */
+    __operitNativeActivateCall() {},
     ipcApi: {}, packageTarget: 'fixture', callId: 'owner', __operitCurrentCallId: 'owner',
     /** Preserves empty routing options without guessing at transport results. */
     __operitText(value) { return value == null ? '' : String(value); },

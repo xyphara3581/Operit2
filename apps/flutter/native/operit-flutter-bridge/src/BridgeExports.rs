@@ -273,7 +273,7 @@ async fn bridge_push_open_async(handle: &OperitFlutterBridge, request_bytes: &[u
         Ok(request) => request,
         Err(error) => return native_result_vec(Err::<String, _>(error)),
     };
-    native_result_vec(handle.pushOpen(request))
+    native_result_vec(handle.pushOpen(request).await)
 }
 
 /// Decodes and dispatches one compact wasm CoreProxy push item.
@@ -423,8 +423,7 @@ impl OperitFlutterBridgeWasm {
 
     #[allow(non_snake_case)]
     pub fn closeWatchStream(&self, subscriptionId: &str) -> Vec<u8> {
-        self.inner.closeWatchStream(subscriptionId);
-        native_result_vec(Ok::<(), CoreLinkError>(()))
+        native_result_vec(self.inner.closeWatchStream(subscriptionId))
     }
 }
 

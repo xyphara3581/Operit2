@@ -26,7 +26,7 @@ impl ToolPkgChatMessageHookBridge {
     /// Synchronizes active chat message hook registrations from enabled ToolPkg containers.
     #[allow(non_snake_case)]
     pub fn syncToolPkgRegistrations(activeContainers: &[ToolPkgContainerRuntime]) {
-        let mut hooks = activeContainers
+        let hooks = activeContainers
             .iter()
             .flat_map(|runtime| {
                 runtime
@@ -40,11 +40,6 @@ impl ToolPkgChatMessageHookBridge {
                     })
             })
             .collect::<Vec<_>>();
-        hooks.sort_by(|left, right| {
-            left.containerPackageName
-                .cmp(&right.containerPackageName)
-                .then(left.hookId.cmp(&right.hookId))
-        });
         *CHAT_MESSAGE_HOOKS
             .get_or_init(|| Mutex::new(Vec::new()))
             .lock()

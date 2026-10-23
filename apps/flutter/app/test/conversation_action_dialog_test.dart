@@ -77,6 +77,7 @@ Future<void> _pumpDialog(
                     context: context,
                     builder: (context) => ConversationActionDialog(
                       history: const core.ChatHistoryListItem(
+                        parentChatId: null,
                         id: 'chat-1',
                         title: '长对话标题',
                         group: null,

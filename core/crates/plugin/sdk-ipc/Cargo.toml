@@ -7,6 +7,7 @@ publish = false
 description = "Plugin SDK Link session, types, and Operit IPC dispatch over Host IPC bytes."
 
 [dependencies]
+futures-util.workspace = true
 async-trait.workspace = true
 operit-host-api = { path = "../../foundation/host-api" }
 operit-link = { path = "../../foundation/link" }
@@ -14,5 +15,6 @@ serde.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 
 [dev-dependencies]
+operit-host-native-scheduler = { path = "../../../../hosts/common/operit-host-native-scheduler", default-features = false }
 operit-host-native-plugin-sdk-ipc = { path = "../../../../hosts/common/operit-host-native-plugin-sdk-ipc" }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }

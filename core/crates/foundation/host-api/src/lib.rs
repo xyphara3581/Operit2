@@ -2131,12 +2131,12 @@ pub type HostJavaScriptRuntimeStateOutputFuture =
     Pin<Box<dyn Future<Output = HostResult<HostJavaScriptRuntimeStateOutput>> + 'static>>;
 
 struct HostJavaScriptExecutionInterruptState {
-    deadlineMillis: u128,
+    deadlineMillis: Option<u128>,
     cancelled: AtomicBool,
     timedOut: AtomicBool,
 }
 
-/// Controls one exact host-owned JavaScript execution deadline.
+/// Controls cancellation and an optional caller-owned JavaScript execution deadline.
 #[derive(Clone)]
 pub struct HostJavaScriptExecutionInterrupt {
     state: Arc<HostJavaScriptExecutionInterruptState>,
@@ -2157,11 +2157,22 @@ impl HostJavaScriptExecutionInterrupt {
             .ok_or_else(|| HostError::new("JavaScript execution deadline exceeds clock range"))?;
         Ok(Self {
             state: Arc::new(HostJavaScriptExecutionInterruptState {
-                deadlineMillis,
+                deadlineMillis: Some(deadlineMillis),
                 cancelled: AtomicBool::new(false),
                 timedOut: AtomicBool::new(false),
             }),
         })
+    }
+
+    /// Creates an execution token that ends only through explicit cancellation.
+    pub fn unlimited() -> Self {
+        Self {
+            state: Arc::new(HostJavaScriptExecutionInterruptState {
+                deadlineMillis: None,
+                cancelled: AtomicBool::new(false),
+                timedOut: AtomicBool::new(false),
+            }),
+        }
     }
 
     /// Requests interruption of the execution owning this token.
@@ -2174,7 +2185,11 @@ impl HostJavaScriptExecutionInterrupt {
         if self.state.cancelled.load(Ordering::Acquire) {
             return true;
         }
-        if crate::TimeUtils::currentTimeMillisU128() >= self.state.deadlineMillis {
+        if self
+            .state
+            .deadlineMillis
+            .is_some_and(|deadline| crate::TimeUtils::currentTimeMillisU128() >= deadline)
+        {
             self.state.timedOut.store(true, Ordering::Release);
             return true;
         }
@@ -2187,6 +2202,15 @@ impl HostJavaScriptExecutionInterrupt {
     }
 }
 
+/// Identifies affine JavaScript workloads whose synchronous dependencies require independent scheduling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostJavaScriptRuntimeStateKind {
+    /// Runs plugin functions, callbacks, and their Promise continuations.
+    Execution,
+    /// Lowers source without invoking plugin code or waiting for an execution state.
+    Compilation,
+}
+
 /// Creates and schedules platform-owned JavaScript runtimes and their affine state.
 pub trait HostJavaScriptRuntimeHost: Send + Sync {
     /// Creates one concrete JavaScript runtime on the current owning executor.
@@ -2196,6 +2220,7 @@ pub trait HostJavaScriptRuntimeHost: Send + Sync {
     fn createHostJavaScriptRuntimeState(
         &self,
         taskName: &str,
+        kind: HostJavaScriptRuntimeStateKind,
         factory: HostJavaScriptRuntimeStateFactory,
     ) -> HostResult<HostJavaScriptRuntimeStateHandle>;
 
@@ -2203,15 +2228,15 @@ pub trait HostJavaScriptRuntimeHost: Send + Sync {
     fn executeHostJavaScriptRuntimeStateTask(
         &self,
         handle: HostJavaScriptRuntimeStateHandle,
-        timeoutMillis: u64,
+        interrupt: HostJavaScriptExecutionInterrupt,
         task: HostJavaScriptRuntimeStateTask,
     ) -> HostResult<HostJavaScriptRuntimeStateOutput>;
 
-    /// Enqueues a finite synchronous continuation directly on its owner without waiting for completion.
+    /// Enqueues one synchronous continuation directly on its owner without waiting for completion.
     fn enqueueHostJavaScriptRuntimeStateTask(
         &self,
         handle: HostJavaScriptRuntimeStateHandle,
-        timeoutMillis: u64,
+        interrupt: HostJavaScriptExecutionInterrupt,
         task: HostJavaScriptRuntimeStateTask,
     ) -> HostResult<()>;
 
@@ -2219,7 +2244,7 @@ pub trait HostJavaScriptRuntimeHost: Send + Sync {
     fn executeHostJavaScriptRuntimeStateAsyncTask(
         &self,
         handle: HostJavaScriptRuntimeStateHandle,
-        timeoutMillis: u64,
+        interrupt: HostJavaScriptExecutionInterrupt,
         task: HostJavaScriptRuntimeStateAsyncTask,
     ) -> HostJavaScriptRuntimeStateOutputFuture;
 

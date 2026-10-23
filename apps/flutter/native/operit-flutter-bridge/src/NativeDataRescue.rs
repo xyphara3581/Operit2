@@ -16,7 +16,7 @@ struct RescueJob {
     id: u64,
     progress: Arc<Mutex<Option<RescueProgress>>>,
     result: Arc<Mutex<Option<Result<Value, String>>>>,
-    worker: std::thread::JoinHandle<()>,
+    worker: operit_host_native_common::NativeTaskHandle<()>,
 }
 
 /// Starts one background operation while keeping platform request queues available.
@@ -46,17 +46,15 @@ fn start_job(default_runtime: PathBuf, request: Value) -> Result<Value, String> 
     let id = NEXT_JOB.fetch_add(1, Ordering::Relaxed);
     let result = Arc::new(Mutex::new(None));
     let completion = result.clone();
-    let worker = std::thread::Builder::new()
-        .name("data-rescue".into())
-        .spawn(move || {
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                dispatch_session(default_runtime, operation)
-            }))
-            .map_err(|_| "Maintenance worker panicked".to_string())
-            .and_then(|value| value);
-            *completion.lock().expect("Rescue job result lock poisoned") = Some(outcome);
-        })
-        .map_err(|error| error.to_string())?;
+    let worker = operit_host_native_common::scheduleNativeBlockingTask("data-rescue", move || {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_session(default_runtime, operation)
+        }))
+        .map_err(|_| "Maintenance worker panicked".to_string())
+        .and_then(|value| value);
+        *completion.lock().expect("Rescue job result lock poisoned") = Some(outcome);
+    })
+    .map_err(|error| error.to_string())?;
     *jobs = Some(RescueJob {
         id,
         progress,
@@ -204,7 +202,8 @@ mod tests {
             id: 42,
             progress: progress.clone(),
             result: result.clone(),
-            worker: std::thread::spawn(|| {}),
+            worker: operit_host_native_common::scheduleNativeBlockingTask("rescue-test", || {})
+                .unwrap(),
         });
         assert!(poll_job(&json!({"jobId": 43})).is_err());
         let first = poll_job(&json!({"jobId": 42})).unwrap();
@@ -240,12 +239,14 @@ mod tests {
         let (finish, finished) = std::sync::mpsc::channel();
         let result = Arc::new(Mutex::new(None));
         let worker_result = result.clone();
-        let worker = std::thread::spawn(move || {
-            let _session = RESCUE_SESSION.get().unwrap().lock().unwrap();
-            ready_sender.send(()).unwrap();
-            finished.recv().unwrap();
-            *worker_result.lock().unwrap() = Some(Ok(Value::Null));
-        });
+        let worker =
+            operit_host_native_common::scheduleNativeBlockingTask("rescue-test", move || {
+                let _session = RESCUE_SESSION.get().unwrap().lock().unwrap();
+                ready_sender.send(()).unwrap();
+                finished.recv().unwrap();
+                *worker_result.lock().unwrap() = Some(Ok(Value::Null));
+            })
+            .unwrap();
         *JOB.lock().unwrap() = Some(RescueJob {
             id: 99,
             progress: Arc::new(Mutex::new(None)),
@@ -279,7 +280,10 @@ mod tests {
             .get_or_init(|| Mutex::new(None))
             .lock()
             .unwrap() = Some(NativeRescueSession::open(runtime.clone(), None).unwrap());
-        let worker = std::thread::spawn(|| panic!("injected maintenance worker failure"));
+        let worker = operit_host_native_common::scheduleNativeBlockingTask("rescue-test", || {
+            panic!("injected maintenance worker failure")
+        })
+        .unwrap();
         *JOB.lock().unwrap() = Some(RescueJob {
             id: 100,
             progress: Arc::new(Mutex::new(None)),

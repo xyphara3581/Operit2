@@ -537,7 +537,7 @@ impl MessageCoordinationDelegate {
                 Some(chatId) => chatId,
                 None => match self
                     .chatHistoryDelegate
-                    .createNewChat(enhancedAiService, true, None, None)
+                    .createNewChat(enhancedAiService, true, None, None, None)
                     .await
                 {
                     Ok(chatId) => chatId,

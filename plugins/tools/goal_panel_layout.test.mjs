@@ -25,6 +25,8 @@ async function panelHarness() {
         GoalService: {
           /** Delivers the durable deletion through the same subscription. */
           async clear() { await change(null); },
+          /** Publishes status actions through the same routed state collector. */
+          async status(chatId, status) { assert.equal(chatId, "layout-test"); await change({ ...state.get("goal"), status }); },
           /** Exposes the routed watch as a standard async iterator. */
           watch() {
             reads++;
@@ -101,10 +103,20 @@ for (const status of ["active", "paused", "completed"]) {
     panel.render();
     await panel.change({ objective: "Keep the goal card visible", status, startedAt: 1000, pausedDurationMs: 0 });
     const card = panel.render();
-    assert.equal(card.props.padding.vertical, 2);
+    assert.equal(card.props.paddingHorizontal, 0);
+    assert.equal(card.props.paddingBottom, 8);
+    const surface = descendants(card).find(node => node.props.key === "goal.surface");
+    assert.equal(surface.props.containerColor, "surfaceContainer");
+    assert.equal(surface.props.shape.cornerRadius, 8);
+    assert.equal(surface.props.themeSurface, "card");
+    assert.equal(descendants(card).find(node => node.props.key === "goal.title").props.style, "labelMedium");
+    assert.ok(!descendants(card).some(node => node.props.key === "goal.details"));
+    assert.equal(panel.timers.size, 0, "a hidden clock must not allocate a timer");
+    descendants(card).find(node => node.props.key === "goal.expand").props.onClick();
+    assert.ok(descendants(panel.render()).some(node => node.props.key === "goal.details"));
     assert.ok(descendants(card).some(node => node.props.text === "Keep the goal card visible"));
     assert.equal(panel.timers.size, status === "active" ? 1 : 0);
-    const remove = descendants(card).find(node => node.props.content?.props.name === "delete");
+    const remove = descendants(card).find(node => node.props.key === "goal.clear");
     await remove.props.onClick();
     expectZeroHeightPanel(panel.render());
     assert.equal(panel.timers.size, 0);
@@ -117,6 +129,9 @@ test("goal subscriptions and timers belong to the exact composition context", as
   const panel = await panelHarness();
   panel.render();
   await panel.change({ objective: "Remote goal", status: "active", startedAt: 1000, pausedDurationMs: 0 });
+  const collapsed = panel.render();
+  assert.equal(panel.timers.size, 0);
+  descendants(collapsed).find(node => node.props.key === "goal.expand").props.onClick();
   panel.render();
   assert.equal(panel.timers.size, 1);
   assert.equal(panel.reads, 1);
@@ -127,4 +142,28 @@ test("goal subscriptions and timers belong to the exact composition context", as
   panel.dispose();
   assert.equal(panel.closed, 2);
   assert.equal(panel.timers.size, 0);
+});
+
+/** Verifies icon controls preserve routed pause/resume semantics and collapse releases only the UI clock. */
+test("goal icon controls retain observation while collapsed clocks stay idle", async () => {
+  const panel = await panelHarness();
+  panel.render();
+  await panel.change({ objective: "Mobile goal", status: "active", startedAt: 1000, pausedDurationMs: 0 });
+  let tree = panel.render();
+  descendants(tree).find(node => node.props.key === "goal.expand").props.onClick();
+  tree = panel.render();
+  assert.equal(panel.timers.size, 1);
+  await descendants(tree).find(node => node.props.key === "goal.pause").props.onClick();
+  tree = panel.render();
+  assert.equal(panel.timers.size, 0);
+  await descendants(tree).find(node => node.props.key === "goal.resume").props.onClick();
+  tree = panel.render();
+  assert.equal(panel.timers.size, 1);
+  descendants(tree).find(node => node.props.key === "goal.expand").props.onClick();
+  panel.render();
+  assert.equal(panel.timers.size, 0);
+  assert.equal(panel.reads, 1);
+  assert.equal(panel.closed, 0);
+  panel.dispose();
+  assert.equal(panel.closed, 1);
 });

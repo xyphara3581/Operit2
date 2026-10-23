@@ -164,7 +164,7 @@ fn native_watch_event_into(subscription_id: &str, event: CoreEvent, bytes: &mut 
     }
 }
 
-/// Owns ABI-v2 control metadata and retained shared binary allocations.
+/// Owns ABI-v3 control metadata and retained shared binary allocations.
 pub(crate) struct NativeFrame(Vec<u8>, Vec<operit_link::CoreBytes>);
 
 impl NativeFrame {

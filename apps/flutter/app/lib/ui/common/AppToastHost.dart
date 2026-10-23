@@ -106,16 +106,16 @@ class _AppToastHostState extends State<AppToastHost> {
   /// Builds the window content with the top-right notice column above it.
   @override
   Widget build(BuildContext context) {
-    if (_entries.isEmpty) {
-      return widget.child;
-    }
+    // Keep the application's parent unchanged across notice entry and exit.
+    // Reparenting it here disposes background media and the shared glass scene.
     return Stack(
       fit: StackFit.expand,
       children: <Widget>[
         widget.child,
         // This host is mounted above the navigator. The column carries its
         // own overlay so close-button tooltips have an ancestor to attach to.
-        Positioned.fill(child: Overlay.wrap(child: _noticeColumn(context))),
+        if (_entries.isNotEmpty)
+          Positioned.fill(child: Overlay.wrap(child: _noticeColumn(context))),
       ],
     );
   }

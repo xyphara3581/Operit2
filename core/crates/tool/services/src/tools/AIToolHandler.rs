@@ -79,7 +79,6 @@ fn toolPkgRouteArguments(owner: Option<String>, method: String, args: Value) -> 
 #[derive(Clone)]
 pub struct AIToolHandler {
     inner: Arc<Mutex<AIToolHandlerState>>,
-    executorAvailability: Arc<tokio::sync::Notify>,
     /// Contains only the immutable package identity bound by the JavaScript engine.
     pub(crate) authenticatedExtensionOwner: Option<String>,
     pub(crate) storageSession: operit_store::PluginStorage::PluginStorageSession,
@@ -90,56 +89,47 @@ pub struct AIToolHandler {
     pub(crate) invocationSnapshot: crate::ToolExecutionManager::ToolInvocationSnapshot,
 }
 
-/// Returns a taken executor on normal completion, cancellation or panic unwinding.
-struct ToolExecutorLease {
-    name: String,
-    executor: Option<RegisteredToolExecutor>,
-    exclusive: bool,
-    state: Arc<Mutex<AIToolHandlerState>>,
-    available: Arc<tokio::sync::Notify>,
+/// Keeps registration identity stable while an invocation owns or waits for its executor.
+#[derive(Clone)]
+enum ToolExecutorRegistration {
+    Exclusive(Arc<tokio::sync::Mutex<RegisteredToolExecutor>>),
+    Shared(Arc<dyn SharedToolExecutor>),
+}
+
+impl From<RegisteredToolExecutor> for ToolExecutorRegistration {
+    /// Preserves explicitly shared contracts and serializes each exclusive instance.
+    fn from(executor: RegisteredToolExecutor) -> Self {
+        match executor {
+            RegisteredToolExecutor::Shared(executor) => Self::Shared(executor),
+            executor => Self::Exclusive(Arc::new(tokio::sync::Mutex::new(executor))),
+        }
+    }
+}
+
+/// Releases exclusive ownership automatically on completion, cancellation or unwinding.
+enum ToolExecutorLease {
+    Exclusive(tokio::sync::OwnedMutexGuard<RegisteredToolExecutor>),
+    Shared(RegisteredToolExecutor),
 }
 
 impl std::ops::Deref for ToolExecutorLease {
     type Target = RegisteredToolExecutor;
-    /// Borrows the executor while its registry lease remains owned.
+    /// Borrows the executor owned by this invocation.
     fn deref(&self) -> &Self::Target {
-        self.executor
-            .as_ref()
-            .expect("tool executor lease must remain owned")
+        match self {
+            Self::Exclusive(executor) => executor,
+            Self::Shared(executor) => executor,
+        }
     }
 }
 
 impl std::ops::DerefMut for ToolExecutorLease {
-    /// Mutably borrows the executor while its registry lease remains owned.
+    /// Mutably borrows the executor owned by this invocation.
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.executor
-            .as_mut()
-            .expect("tool executor lease must remain owned")
-    }
-}
-
-impl Drop for ToolExecutorLease {
-    /// Restores the exact executor and wakes queued invocations after releasing the registry lock.
-    fn drop(&mut self) {
-        let executor = self
-            .executor
-            .take()
-            .expect("tool executor lease must remain owned");
-        if self.exclusive {
-            let mut state = self.state.lock().expect("AIToolHandler mutex poisoned");
-            assert!(
-                state.executingTools.remove(&self.name),
-                "tool must remain marked executing"
-            );
-            assert!(
-                state
-                    .availableTools
-                    .insert(self.name.clone(), executor)
-                    .is_none(),
-                "tool executor must not be replaced during execution"
-            );
+        match self {
+            Self::Exclusive(executor) => executor,
+            Self::Shared(executor) => executor,
         }
-        self.available.notify_waiters();
     }
 }
 
@@ -157,8 +147,7 @@ impl Drop for ToolInvocationLifecycle {
 }
 
 pub struct AIToolHandlerState {
-    availableTools: BTreeMap<String, RegisteredToolExecutor>,
-    executingTools: BTreeSet<String>,
+    toolExecutors: BTreeMap<String, ToolExecutorRegistration>,
     toolVisibility: BTreeMap<String, ToolRegistrationVisibility>,
     defaultToolsRegistered: bool,
     context: HostManager,
@@ -245,8 +234,7 @@ impl AIToolHandler {
     pub fn new(context: HostManager, runtimeDependencies: ToolRuntimeDependencies) -> Self {
         Self {
             inner: Arc::new(Mutex::new(AIToolHandlerState {
-                availableTools: BTreeMap::new(),
-                executingTools: BTreeSet::new(),
+                toolExecutors: BTreeMap::new(),
                 toolVisibility: BTreeMap::new(),
                 defaultToolsRegistered: false,
                 context,
@@ -255,7 +243,6 @@ impl AIToolHandler {
                 toolPermissionSystem: ToolPermissionSystem::getInstance(),
                 packageManager: None,
             })),
-            executorAvailability: Arc::new(tokio::sync::Notify::new()),
             authenticatedExtensionOwner: None,
             invocationSnapshot: crate::ToolExecutionManager::ToolInvocationSnapshot::default(),
             deviceTransportScope: Default::default(),
@@ -270,7 +257,7 @@ impl AIToolHandler {
     #[allow(non_snake_case)]
     pub fn unregisterTool(&mut self, toolName: String) {
         let mut guard = self.inner.lock().expect("AIToolHandler mutex poisoned");
-        guard.availableTools.remove(&toolName);
+        guard.toolExecutors.remove(&toolName);
         guard.toolVisibility.remove(&toolName);
     }
 
@@ -279,7 +266,7 @@ impl AIToolHandler {
     pub fn unregisterMcpServerTools(&mut self, serverName: &str) -> usize {
         let mut guard = self.inner.lock().expect("AIToolHandler mutex poisoned");
         let toolNames = guard
-            .availableTools
+            .toolExecutors
             .keys()
             .filter(|toolName| {
                 matches!(toolName.split_once(':'), Some((name, _)) if name == serverName)
@@ -288,7 +275,7 @@ impl AIToolHandler {
             .collect::<Vec<_>>();
         let count = toolNames.len();
         for toolName in toolNames {
-            guard.availableTools.remove(&toolName);
+            guard.toolExecutors.remove(&toolName);
             guard.toolVisibility.remove(&toolName);
         }
         count
@@ -455,7 +442,7 @@ impl AIToolHandler {
         self.inner
             .lock()
             .expect("AIToolHandler mutex poisoned")
-            .availableTools
+            .toolExecutors
             .keys()
             .cloned()
             .collect()
@@ -579,11 +566,18 @@ impl AIToolHandler {
         let toolName = name.as_str().to_string();
         let mut guard = self.inner.lock().expect("AIToolHandler mutex poisoned");
         assert!(
-            !guard.availableTools.contains_key(&toolName),
+            !guard.toolExecutors.contains_key(&toolName),
             "Built-in tool is registered more than once: {toolName}"
         );
-        guard.availableTools.insert(toolName.clone(), executor.into());
+        guard.toolExecutors.insert(toolName.clone(), ToolExecutorRegistration::from(executor.into()));
         guard.toolVisibility.insert(toolName, visibility);
+    }
+
+    /// Replaces the registration without changing executors already owned by invocations.
+    fn publishToolExecutor(&mut self, name: String, executor: RegisteredToolExecutor, visibility: ToolRegistrationVisibility) {
+        let mut state = self.inner.lock().expect("AIToolHandler mutex poisoned");
+        state.toolExecutors.insert(name.clone(), executor.into());
+        state.toolVisibility.insert(name, visibility);
     }
 
     /// Registers a tool executor with explicit public or internal visibility.
@@ -598,11 +592,7 @@ impl AIToolHandler {
             BuiltinToolName::from_name(&name).is_none(),
             "Built-in tools must use registerBuiltinTool: {name}"
         );
-        let mut guard = self.inner.lock().expect("AIToolHandler mutex poisoned");
-        guard
-            .availableTools
-            .insert(name.clone(), RegisteredToolExecutor::Synchronous(executor));
-        guard.toolVisibility.insert(name, visibility);
+        self.publishToolExecutor(name, RegisteredToolExecutor::Synchronous(executor), visibility);
     }
 
     /// Registers a public tool with an explicitly asynchronous execution contract.
@@ -611,22 +601,13 @@ impl AIToolHandler {
             BuiltinToolName::from_name(&name).is_none(),
             "Built-in tools must use their typed registration"
         );
-        let mut guard = self.inner.lock().expect("AIToolHandler mutex poisoned");
-        guard
-            .availableTools
-            .insert(name.clone(), RegisteredToolExecutor::Asynchronous(executor));
-        guard
-            .toolVisibility
-            .insert(name, ToolRegistrationVisibility::PUBLIC);
+        self.publishToolExecutor(name, RegisteredToolExecutor::Asynchronous(executor), ToolRegistrationVisibility::PUBLIC);
     }
 
     /// Registers an explicitly concurrent operation on the same public or internal executor registry.
     pub fn registerSharedTool(&mut self, name: String, executor: Arc<dyn SharedToolExecutor>, visibility: ToolRegistrationVisibility) {
         assert!(BuiltinToolName::from_name(&name).is_none(), "Built-in tools must use their typed registration");
-        let mut state = self.inner.lock().expect("AIToolHandler mutex poisoned");
-        assert!(!state.executingTools.contains(&name), "Cannot replace an executing tool");
-        state.availableTools.insert(name.clone(), RegisteredToolExecutor::Shared(executor));
-        state.toolVisibility.insert(name, visibility);
+        self.publishToolExecutor(name, RegisteredToolExecutor::Shared(executor), visibility);
     }
 
     /// Returns the configured visibility for one tool.
@@ -665,45 +646,17 @@ impl AIToolHandler {
     #[allow(non_snake_case)]
     pub fn hasToolExecutor(&self, toolName: &str) -> bool {
         let guard = self.inner.lock().expect("AIToolHandler mutex poisoned");
-        guard.availableTools.contains_key(toolName) || guard.executingTools.contains(toolName)
+        guard.toolExecutors.contains_key(toolName)
     }
 
-    /// Acquires one named executor, waiting for an in-flight invocation of that same tool to finish.
-    async fn takeToolExecutorForExecution(&self, toolName: &str) -> Option<ToolExecutorLease> {
-        loop {
-            let notified = self.executorAvailability.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            {
-                let mut guard = self.inner.lock().expect("AIToolHandler mutex poisoned");
-                if let Some(RegisteredToolExecutor::Shared(executor)) = guard.availableTools.get(toolName) {
-                    return Some(ToolExecutorLease {
-                        name: toolName.to_owned(),
-                        executor: Some(RegisteredToolExecutor::Shared(executor.clone())),
-                        exclusive: false,
-                        state: self.inner.clone(),
-                        available: self.executorAvailability.clone(),
-                    });
-                }
-                if let Some(executor) = guard.availableTools.remove(toolName) {
-                    assert!(
-                        guard.executingTools.insert(toolName.to_owned()),
-                        "Tool executor was already marked executing: {toolName}"
-                    );
-                    return Some(ToolExecutorLease {
-                        name: toolName.to_owned(),
-                        executor: Some(executor),
-                        exclusive: true,
-                        state: self.inner.clone(),
-                        available: self.executorAvailability.clone(),
-                    });
-                }
-                if !guard.executingTools.contains(toolName) {
-                    return None;
-                }
-            }
-            notified.await;
-        }
+    /// Acquires the registered instance without holding the registry while waiting or executing.
+    async fn acquireToolExecutor(&self, toolName: &str) -> Option<ToolExecutorLease> {
+        let registration = self.inner.lock().expect("AIToolHandler mutex poisoned")
+            .toolExecutors.get(toolName).cloned()?;
+        Some(match registration {
+            ToolExecutorRegistration::Exclusive(executor) => ToolExecutorLease::Exclusive(executor.lock_owned().await),
+            ToolExecutorRegistration::Shared(executor) => ToolExecutorLease::Shared(RegisteredToolExecutor::Shared(executor)),
+        })
     }
 
     /// Ensures default or package tools are registered, then reports whether a tool exists.
@@ -1075,7 +1028,7 @@ impl AIToolHandler {
             if !self.getToolExecutorOrActivate(&request.name).await? {
                 return Ok(vec![Self::failedInvocation(tool(), format!("Tool not found: {}", request.name))]);
             }
-            let mut executor = self.takeToolExecutorForExecution(&request.name).await
+            let mut executor = self.acquireToolExecutor(&request.name).await
                 .ok_or_else(|| format!("Registered executor disappeared: {}", request.name))?;
             let prepared = match executor.prepare(request, context, isAiInvocation) {
                 Ok(prepared) => prepared,
@@ -1150,7 +1103,7 @@ impl AIToolHandler {
     /// Clears registered tools and runtime-only handler state.
     pub fn reset(&mut self) {
         let mut guard = self.inner.lock().expect("AIToolHandler mutex poisoned");
-        guard.availableTools.clear();
+        guard.toolExecutors.clear();
         guard.toolVisibility.clear();
         guard.defaultToolsRegistered = false;
     }
@@ -1969,6 +1922,7 @@ mod tests {
         &'a self,
         setAsCurrentChat: bool,
         sourceChatId: Option<String>,
+        parentChatId: Option<String>,
         input: Option<serde_json::Value>,
     ) -> ToolRuntimeSupportFuture<'a, Result<String, String>> { panic!("Unexpected runtime service: createChatRuntime") }
         /// Rejects unexpected application service access in execution pipeline tests.
@@ -2043,7 +1997,7 @@ mod tests {
             permissions.saveAiPermissionMode(AiPermissionMode::ReadOnly).unwrap();
             let handler = AIToolHandler {
                 inner: Arc::new(Mutex::new(AIToolHandlerState {
-                    availableTools: BTreeMap::new(), executingTools: BTreeSet::new(),
+                    toolExecutors: BTreeMap::new(),
                     toolVisibility: BTreeMap::new(), defaultToolsRegistered: true,
                     context: HostManager { runtimeStorageHost: Some(storage.clone()), runtimeSqliteHost: Some(storage),
                         fileSystemHost: Some(Arc::new(operit_host_native_filesystem::PosixFileSystemHost::new())),
@@ -2055,8 +2009,7 @@ mod tests {
                     ),
                     hooks: Vec::new(), toolPermissionSystem: permissions, packageManager: None,
                 })),
-                executorAvailability: Arc::new(tokio::sync::Notify::new()),
-                authenticatedExtensionOwner: Some("engine-owner".into()),
+                    authenticatedExtensionOwner: Some("engine-owner".into()),
                 invocationSnapshot: Default::default(),
                 storageSession: Default::default(), chatObservations: Default::default(), coreRouteWatches: Default::default(), coreRoutePushes: Default::default(), deviceTransportScope: Default::default(),
             };
@@ -2288,7 +2241,7 @@ mod tests {
 
     /// Proves Direct cancellation releases an exclusive executor without dispatching lifecycle hooks.
     #[tokio::test]
-    async fn direct_cancellation_restores_exclusive_executor_without_hooks() {
+    async fn direct_cancellation_releases_exclusive_executor_without_hooks() {
         let mut fixture = PipelineFixture::new();
         let hooks = Arc::new(LifecycleProbe::default());
         fixture.handler.addToolHook(hooks.clone());
@@ -2299,13 +2252,67 @@ mod tests {
         for _ in 0..2 {
             let mut pending = fixture.handler.execute_tool_call(probeRequest(json!({})));
             assert!(futures_util::poll!(&mut pending).is_pending());
-            assert!(fixture.handler.inner.lock().unwrap().executingTools.contains("pipeline_probe"));
+            let ToolExecutorRegistration::Exclusive(registration) = fixture.handler.inner.lock().unwrap()
+                .toolExecutors.get("pipeline_probe").unwrap().clone() else { panic!("Expected exclusive executor") };
+            assert!(registration.try_lock().is_err());
             drop(pending);
-            assert!(fixture.handler.inner.lock().unwrap().availableTools.contains_key("pipeline_probe"));
-            assert!(fixture.handler.inner.lock().unwrap().executingTools.is_empty());
+            assert!(fixture.handler.inner.lock().unwrap().toolExecutors.contains_key("pipeline_probe"));
+            assert!(registration.try_lock().is_ok());
             assert!(hooks.take().is_empty());
         }
         assert!(ToolExecutionManager::currentToolInvocationContext().is_none());
+    }
+
+    /// Proves re-registration during execution neither panics nor overwrites the replacement on release.
+    #[tokio::test]
+    async fn replacing_an_active_registration_preserves_each_instance() {
+        let mut fixture = PipelineFixture::new();
+        fixture.handler.registerAsyncTool("pipeline_probe".into(), Box::new(AsyncFnToolExecutor {
+            validate: Arc::new(|_| ToolValidationResult { valid: true, errorMessage: String::new() }),
+            invoke: Arc::new(|_, _| Box::pin(std::future::pending())), effect: ToolEffect::WRITE,
+        }));
+        let old = fixture.handler.inner.lock().unwrap().toolExecutors.get("pipeline_probe").unwrap().clone();
+        let mut pending = fixture.handler.execute_tool_call(probeRequest(json!({})));
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        fixture.handler.registerAsyncTool("pipeline_probe".into(), Box::new(AsyncFnToolExecutor {
+            validate: Arc::new(|_| ToolValidationResult { valid: true, errorMessage: String::new() }),
+            invoke: Arc::new(|_, _| Box::pin(async { ToolResult {
+                toolName: "pipeline_probe".into(), success: true,
+                result: ToolResultData::JsonResultData(operit_plugin_sdk::js_sdk::results::JsonResultData { value: json!({"generation": 2}) }),
+                error: None,
+            } })), effect: ToolEffect::WRITE,
+        }));
+        let result = fixture.handler.execute_tool_call(probeRequest(json!({"generation": 2}))).await;
+        assert!(result.success, "{:?}", result.error);
+        let JsToolCallResultData::Value(value) = result.data else { panic!("Expected structured JSON") };
+        assert_eq!(value["generation"], 2);
+        drop(pending);
+        let ToolExecutorRegistration::Exclusive(old) = old else { panic!("Expected exclusive registration") };
+        assert!(old.try_lock().is_ok());
+        let ToolExecutorRegistration::Exclusive(replacement) = fixture.handler.inner.lock().unwrap()
+            .toolExecutors.get("pipeline_probe").unwrap().clone() else { panic!("Expected exclusive replacement") };
+        assert!(!Arc::ptr_eq(&old, &replacement));
+        assert!(fixture.handler.execute_tool_call(probeRequest(json!({}))).await.success);
+    }
+
+    /// Proves queued leases retain identity and releasing removed instances cannot republish them.
+    #[tokio::test]
+    async fn unregistering_an_active_executor_does_not_resurrect_it() {
+        let mut fixture = PipelineFixture::new();
+        fixture.handler.registerAsyncTool("pipeline_probe".into(), Box::new(AsyncFnToolExecutor {
+            validate: Arc::new(|_| ToolValidationResult { valid: true, errorMessage: String::new() }),
+            invoke: Arc::new(|_, _| Box::pin(std::future::pending())), effect: ToolEffect::WRITE,
+        }));
+        let lease = fixture.handler.acquireToolExecutor("pipeline_probe").await.unwrap();
+        let mut queued = Box::pin(fixture.handler.acquireToolExecutor("pipeline_probe"));
+        assert!(futures_util::poll!(&mut queued).is_pending());
+        fixture.handler.clone().unregisterTool("pipeline_probe".into());
+        assert!(!fixture.handler.hasToolExecutor("pipeline_probe"));
+        drop(lease);
+        let queued = queued.await.unwrap();
+        assert!(!fixture.handler.hasToolExecutor("pipeline_probe"));
+        drop(queued);
+        assert!(fixture.handler.acquireToolExecutor("pipeline_probe").await.is_none());
     }
 
     /// Proves captured hosts retain turn and hook state independently across a scheduler boundary.

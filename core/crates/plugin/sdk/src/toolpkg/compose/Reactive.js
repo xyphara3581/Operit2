@@ -3,8 +3,9 @@ var OperitComposeReactive = function () {
   var graphs = new WeakMap();
 
   /// Attaches dependency ownership to the existing page context.
-  function attach(ctx) {
+  function attach(ctx, cleanup) {
     graphs.set(ctx, {
+      cleanup: cleanup,
       tasks: new Map(),
       subscriptions: new Map(),
       dirty: new Set(),
@@ -316,6 +317,7 @@ var OperitComposeReactive = function () {
   /// Releases all dependency subscriptions when replacing the root program.
   function dispose(ctx) {
     var graph = graphs.get(ctx);
+    graph.cleanup();
     graph.effects.forEach(/// Cancels subscriptions and timers owned by the discarded program.
     function (effect) { effect.cleanup(); });
     graph.effects.clear();

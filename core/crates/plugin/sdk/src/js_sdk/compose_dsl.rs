@@ -2639,12 +2639,27 @@ pub struct IconButtonProps {
     /// Outline used for interaction feedback and clipping.
     pub shape: Option<ComposeShape>,
 }
+/// Global surface layer whose material treatment follows the host theme settings.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum ComposeThemeSurfaceLayer {
+    /// Broad background panels.
+    #[serde(rename = "panel")]
+    Panel,
+    /// Cards above the page background.
+    #[serde(rename = "card")]
+    Card,
+    /// Controls and rows nested inside a card.
+    #[serde(rename = "control")]
+    Control,
+}
 /// Elevated or outlined Material container for grouped content.
 pub struct CardProps {
     /// Shared node layout, drawing, identity, and lifecycle properties.
     pub base_compose_common_props: ComposeCommonProps,
     /// Child nodes rendered inside the card container.
     pub content: Option<ComposeChildren>,
+    /// Uses global transparency and blur for this layer; requires containerColor and has no elevation.
+    pub themeSurface: Option<ComposeThemeSurfaceLayer>,
     /// Background color of the card surface.
     pub containerColor: Option<ComposeColor>,
     /// Opacity multiplier applied to the card background.
@@ -2766,6 +2781,10 @@ pub struct SnackbarHostProps {
 pub struct AiChatProps {
     /// Shared node layout, drawing, identity, and lifecycle properties.
     pub base_compose_common_props: ComposeCommonProps,
+    /// Identifies the conversation shown in a local embedded chat runtime without changing the main selection.
+    pub chatId: Option<String>,
+    /// Controls the native composer; false leaves sending and cancellation to the surrounding workflow.
+    pub showInput: Option<bool>,
 }
 /// Properties for a responsive trailing panel controlled by the Compose screen.
 pub struct AdaptiveSidePanelProps {

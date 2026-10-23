@@ -3312,6 +3312,11 @@ export interface IconButtonProps extends ComposeCommonProps {
 }
 
 /**
+ * Global surface layer whose material treatment follows the host theme settings.
+ */
+export type ComposeThemeSurfaceLayer = "panel" | "card" | "control";
+
+/**
  * Elevated or outlined Material container for grouped content.
  */
 export interface CardProps extends ComposeCommonProps {
@@ -3319,6 +3324,10 @@ export interface CardProps extends ComposeCommonProps {
    * Child nodes rendered inside the card container.
    */
   content?: ComposeChildren;
+  /**
+   * Uses global transparency and blur for this layer; requires containerColor and has no elevation.
+   */
+  themeSurface?: ComposeThemeSurfaceLayer;
   /**
    * Background color of the card surface.
    */
@@ -3533,6 +3542,14 @@ export interface SnackbarHostProps extends ComposeCommonProps {
  * Properties for embedding the host AI chat content without its workspace panel.
  */
 export interface AiChatProps extends ComposeCommonProps {
+  /**
+   * Identifies the conversation shown in a local embedded chat runtime without changing the main selection.
+   */
+  chatId?: string;
+  /**
+   * Controls the native composer; false leaves sending and cancellation to the surrounding workflow.
+   */
+  showInput?: boolean;
 }
 
 /**

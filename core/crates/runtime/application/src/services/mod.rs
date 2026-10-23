@@ -75,3 +75,6 @@ pub mod ComposeDslSessionService;
 
 #[path = "WorkActivityService.rs"]
 pub mod WorkActivityService;
+
+#[path = "LocalLlmService.rs"]
+pub(crate) mod LocalLlmService;

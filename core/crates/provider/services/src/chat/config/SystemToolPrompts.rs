@@ -684,7 +684,6 @@ async fn compose_tool_prompt(
         model_parameters: Vec::new(),
         available_tools,
         metadata,
-        on_hook_timeout: None,
     })
     .await?;
     let before_context = PromptHookRegistry::dispatchToolPromptComposeHooks(PromptHookContext {

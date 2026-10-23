@@ -269,6 +269,12 @@ impl ChatConfigurationResult {
 
 /// Supplies runtime-owned data and plugin operations to provider code.
 pub trait ProviderRuntimeSupport: Send + Sync {
+    /// Executes a local model on the device selected by its inference Binding.
+    fn generateLocalLlm(&self, _bindingKey: String, _modelBinding: String, _request: Value, _settings: Value)
+        -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send + '_>> {
+        Box::pin(async { Err("Local LLM runtime support is unavailable".to_string()) })
+    }
+
     /// Returns the root directory used by provider runtime data.
     fn dataDir(&self) -> Result<PathBuf, String>;
 

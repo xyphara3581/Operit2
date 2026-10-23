@@ -684,14 +684,17 @@ fn createAndroidPtySession(
     let screenOutput = Arc::new(Mutex::new(VecDeque::new()));
     let cursorState: AndroidPtyCursorState =
         Arc::new(Mutex::new(AndroidPtyCursor { row: 1, col: 1 }));
-    spawnAndroidPtyReaderThread(
+    if let Err(error) = scheduleAndroidPtyReader(
         masterFd,
         writer.clone(),
         output.clone(),
         commandOutput.clone(),
         screenOutput.clone(),
         cursorState,
-    );
+    ) {
+        closeAndroidPtyProcess(pid, masterFd);
+        return Err(error);
+    }
     if let Err(error) =
         waitForInitialAndroidPtyPrompt(commandOutput.clone(), Duration::from_millis(10000))
     {
@@ -720,16 +723,17 @@ fn createAndroidPtySession(
     })
 }
 
-fn spawnAndroidPtyReaderThread(
+/// Schedules the PTY reader on bounded Host service capacity.
+fn scheduleAndroidPtyReader(
     masterFd: RawFd,
     writer: Arc<Mutex<RawFd>>,
     output: Arc<Mutex<VecDeque<u8>>>,
     commandOutput: AndroidPtyCommandOutput,
     screenOutput: Arc<Mutex<VecDeque<u8>>>,
     cursorState: AndroidPtyCursorState,
-) {
+) -> HostResult<()> {
     androidLogInfo(&format!("Android PTY reader thread start fd={masterFd}"));
-    thread::spawn(move || loop {
+    operit_host_native_common::scheduleNativeServiceTask("android-pty-reader", move || loop {
         match readPtyFd(masterFd) {
             Ok(data) if data.is_empty() => thread::sleep(Duration::from_millis(20)),
             Ok(data) => {
@@ -747,7 +751,8 @@ fn spawnAndroidPtyReaderThread(
                 break;
             }
         }
-    });
+    })
+    .map(|_| ())
 }
 
 fn appendAndroidPtyOutput(output: &Arc<Mutex<VecDeque<u8>>>, data: &[u8]) {
@@ -2071,7 +2076,8 @@ mod tests {
         let host = AndroidTerminalHost::new();
         let resolveHost = |_: &str| Err(HostError::new("/mnt/linux is not mounted"));
         assert_eq!(
-            host.resolveWorkingDirectory("proot", "bash", "/mnt/linux/root", &resolveHost).unwrap(),
+            host.resolveWorkingDirectory("proot", "bash", "/mnt/linux/root", &resolveHost)
+                .unwrap(),
             "/root",
         );
     }
@@ -2082,8 +2088,14 @@ mod tests {
         let host = AndroidTerminalHost::new();
         let resolveHost = |_: &str| Err(HostError::new("/mnt/linux is not mounted"));
         assert_eq!(
-            host.resolveWorkingDirectory("android-system", "shell", "/mnt/linux/root", &resolveHost)
-                .unwrap_err().message,
+            host.resolveWorkingDirectory(
+                "android-system",
+                "shell",
+                "/mnt/linux/root",
+                &resolveHost
+            )
+            .unwrap_err()
+            .message,
             "/mnt/linux is not mounted",
         );
     }
@@ -2116,7 +2128,10 @@ mod tests {
         let error = host
             .createOrGetTypedSession("chat", "powershell")
             .unwrap_err();
-        assert_eq!(error.message, "Unsupported Android terminal type: powershell");
+        assert_eq!(
+            error.message,
+            "Unsupported Android terminal type: powershell"
+        );
         assert!(host.lockState().unwrap().ptySessions.is_empty());
     }
 

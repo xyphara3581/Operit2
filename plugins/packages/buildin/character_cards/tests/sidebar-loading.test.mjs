@@ -5,7 +5,7 @@ import { openPlugin } from "./plugin-entry-harness.mjs";
 import { loadModule, plain } from "./runtime.mjs";
 
 /** Supplies neutral Core sidebar metadata without business extensions. */
-function summary(i) { return { id: "loading-" + i, title: "Chat " + i, updatedAt: "0", displayOrder: i, workspaceId: null, workspaceName: null, locked: false, pinned: false, group: null }; }
+function summary(i) { return { id: "loading-" + i, title: "Chat " + i, updatedAt: "0", displayOrder: i, workspaceId: null, workspaceName: null, parentChatId: null, locked: false, pinned: false, group: null }; }
 /** Builds the existing generic sidebar request. */
 function context(chats) { return { input: { view: "characters" }, chatSidebar: { chats, currentChatId: null, activeStreamingChatIds: [] } }; }
 /** Opens real plugin SQL storage with unrelated directory and Chat capabilities unavailable. */

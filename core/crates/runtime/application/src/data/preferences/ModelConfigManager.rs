@@ -1195,15 +1195,83 @@ impl ModelConfigManager {
         .read()
         .map_err(|error| ModelConfigError::ModelListFetch(error.to_string()))?;
         let platform = LocalPlatformTarget::current().map_err(ModelConfigError::ModelListFetch)?;
-        let mut models = registry
+        if registry
             .installedModels
+            .iter()
+            .all(|model| model.manifest.kind != LocalModelKind::Chat)
+            && provider
+                .models
+                .iter()
+                .all(|model| model.localRuntime.inferenceBindingKey.is_empty())
+        {
+            provider.models.clear();
+            return Ok(provider);
+        }
+        let storage = operit_store::RuntimeStorageHost::defaultRuntimeStorageHost();
+        let identity =
+            operit_store::CoreNodeIdentityStore::CoreNodeIdentityStore::new(storage.clone())
+                .initialize()
+                .map_err(ModelConfigError::ModelListFetch)?;
+        let bindings =
+            operit_store::CoreNodeBindingStore::CoreNodeBindingStore::new(storage.clone())
+                .map_err(ModelConfigError::ModelListFetch)?;
+        let mut saved = provider
+            .models
             .into_iter()
-            .filter(|installed| {
-                installed.manifest.kind == LocalModelKind::Chat
-                    && installed.manifest.supportsPlatform(&platform.platform)
-            })
-            .map(|installed| ModelProfile::new(installed.manifest.registryKey()))
-            .collect::<Vec<_>>();
+            .map(|model| (model.id.clone(), model))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut models = Vec::new();
+        for installed in registry.installedModels.into_iter().filter(|installed| {
+            installed.manifest.kind == LocalModelKind::Chat
+                && installed.manifest.supportsPlatform(&platform.platform)
+        }) {
+            let id = installed.manifest.registryKey();
+            let mut model = saved
+                .remove(&id)
+                .unwrap_or_else(|| ModelProfile::new(id.clone()));
+            let binding_key = &model.localRuntime.inferenceBindingKey;
+            let uses_remote_inference = !binding_key.is_empty()
+                && bindings
+                    .bindingOptional(binding_key)
+                    .map_err(ModelConfigError::ModelListFetch)?
+                    .is_some_and(|binding| binding.nodeId != identity.nodeId);
+            // Installing matching weights here must preserve an explicitly selected remote owner.
+            if !uses_remote_inference {
+                model.localRuntime.inferenceBindingKey =
+                    crate::services::LocalLlmService::ensureLocalLlmBinding(storage.clone(), &id)
+                        .map_err(ModelConfigError::ModelListFetch)?;
+            }
+            if model.contextOverride.is_none() {
+                model.contextOverride = Some(ModelContextSpec {
+                    maxContextLength: model.localRuntime.llamaContextSize as f32 / 1000.0,
+                });
+            }
+            if model.capabilitiesOverride.is_none() {
+                model.capabilitiesOverride = Some(ModelCapabilities {
+                    toolCall: true,
+                    ..ModelCapabilities::default()
+                });
+            }
+            if model.requestOverride.is_none() {
+                model.requestOverride = Some(ModelRequestSpec {
+                    supportsStructuredTools: false,
+                    ..ModelRequestSpec::default()
+                });
+            }
+            models.push(model);
+        }
+        // Saved references can use another node's model without mirroring its installation inventory.
+        for model in saved.into_values() {
+            let key = &model.localRuntime.inferenceBindingKey;
+            if !key.is_empty()
+                && bindings
+                    .bindingOptional(key)
+                    .map_err(ModelConfigError::ModelListFetch)?
+                    .is_some_and(|binding| binding.nodeId != identity.nodeId)
+            {
+                models.push(model);
+            }
+        }
         models.sort_by(|left, right| left.id.cmp(&right.id));
         provider.models = models;
         Ok(provider)
@@ -1309,6 +1377,127 @@ mod tests {
             ModelConfigManager::DEFAULT_MODEL_ID,
             ModelConfigDefaults::DEFAULT_MODEL_ID
         );
+    }
+
+    #[test]
+    fn local_llm_settings_and_remote_inference_references_survive_hydration() {
+        use operit_local_models::{
+            LocalModelCatalog::LocalModelCatalog,
+            LocalModelRegistry::{InstalledLocalModel, LocalModelRegistrySnapshot},
+            LocalModelRegistryStore::LocalModelRegistryStore,
+        };
+        use operit_model::ModelConfigData::ModelProfile;
+        let root = unique_test_root("local_llm_settings");
+        setup_test_runtime(root.clone());
+        let storage = operit_store::RuntimeStorageHost::defaultRuntimeStorageHost();
+        let registry_store = LocalModelRegistryStore::forRuntimeStorage(storage.clone());
+        let manifest = LocalModelCatalog::qwen3LlamaCpp();
+        let model_id = manifest.registryKey();
+        let mut registry = LocalModelRegistrySnapshot::empty();
+        registry.installedModels.push(InstalledLocalModel {
+            manifest,
+            storagePath: "runtime/models/local/chat/qwen".into(),
+            installedAtMs: 1,
+            verifiedAtMs: Some(1),
+        });
+        registry_store.write(&registry).unwrap();
+        let manager = ModelConfigManager::new(root.clone());
+        let mut model = manager.getModelProfile("LOCAL_MODEL", &model_id).unwrap();
+        assert!(!model.localRuntime.inferenceBindingKey.is_empty());
+        model.localRuntime.llamaThreadCount = 7;
+        model.localRuntime.llamaContextSize = 4096;
+        manager
+            .updateModelProfile("LOCAL_MODEL", model.clone())
+            .unwrap();
+        assert_eq!(
+            manager
+                .getModelProfile("LOCAL_MODEL", &model_id)
+                .unwrap()
+                .localRuntime,
+            model.localRuntime
+        );
+        operit_store::CoreNodeBindingStore::CoreNodeBindingStore::new(storage)
+            .unwrap()
+            .create("remote-llm", "model-device")
+            .unwrap();
+        let mut provider = manager.getProviderProfile("LOCAL_MODEL").unwrap();
+        let mut remote = ModelProfile::new("remote-model@revision".into());
+        remote.localRuntime.inferenceBindingKey = "remote-llm".into();
+        provider.models.push(remote.clone());
+        manager.saveProviderToDataStore(&provider).unwrap();
+        registry.installedModels.clear();
+        registry_store.write(&registry).unwrap();
+        let models = manager.getProviderProfile("LOCAL_MODEL").unwrap().models;
+        assert_eq!(models, vec![remote]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn local_model_installation_preserves_an_explicit_remote_inference_binding() {
+        use operit_local_models::{
+            LocalModelCatalog::LocalModelCatalog,
+            LocalModelRegistry::{InstalledLocalModel, LocalModelRegistrySnapshot},
+            LocalModelRegistryStore::LocalModelRegistryStore,
+        };
+        let root = unique_test_root("local_remote_model_collision");
+        setup_test_runtime(root.clone());
+        let storage = operit_store::RuntimeStorageHost::defaultRuntimeStorageHost();
+        let registry_store = LocalModelRegistryStore::forRuntimeStorage(storage.clone());
+        let manifest = LocalModelCatalog::qwen3LlamaCpp();
+        let model_id = manifest.registryKey();
+        let mut registry = LocalModelRegistrySnapshot::empty();
+        registry.installedModels.push(InstalledLocalModel {
+            manifest,
+            storagePath: "runtime/models/local/chat/qwen".into(),
+            installedAtMs: 1,
+            verifiedAtMs: Some(1),
+        });
+        registry_store.write(&registry).unwrap();
+        let manager = ModelConfigManager::new(root.clone());
+        let local = manager.getModelProfile("LOCAL_MODEL", &model_id).unwrap();
+        assert!(!local.localRuntime.inferenceBindingKey.is_empty());
+        operit_store::CoreNodeBindingStore::CoreNodeBindingStore::new(storage)
+            .unwrap()
+            .create("remote-same-model", "remote-model-device")
+            .unwrap();
+        let mut remote = local.clone();
+        remote.localRuntime.inferenceBindingKey = "remote-same-model".into();
+        remote.localRuntime.llamaThreadCount = 7;
+        remote.localRuntime.llamaContextSize = 4096;
+        manager
+            .updateModelProfile("LOCAL_MODEL", remote.clone())
+            .unwrap();
+
+        // A fresh read must preserve the selected device even with identical local weights.
+        let reloaded = ModelConfigManager::new(root.clone());
+        assert_eq!(
+            reloaded.getModelProfile("LOCAL_MODEL", &model_id).unwrap(),
+            remote
+        );
+
+        // Removing and reinstalling this node's weights must not change the remote reference.
+        registry_store
+            .write(&LocalModelRegistrySnapshot::empty())
+            .unwrap();
+        assert_eq!(
+            reloaded.getModelProfile("LOCAL_MODEL", &model_id).unwrap(),
+            remote
+        );
+        registry_store.write(&registry).unwrap();
+        assert_eq!(
+            reloaded.getModelProfile("LOCAL_MODEL", &model_id).unwrap(),
+            remote
+        );
+
+        // An explicit change back to this node remains possible.
+        reloaded
+            .updateModelProfile("LOCAL_MODEL", local.clone())
+            .unwrap();
+        assert_eq!(
+            reloaded.getModelProfile("LOCAL_MODEL", &model_id).unwrap(),
+            local
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     /// Verifies local provider hydration does not create a nested HTTP runtime.

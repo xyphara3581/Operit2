@@ -5,6 +5,7 @@ export function composeStreamFixture(context, { projectTree = true, inspectStora
   const nodes = new Map();
   const events = [];
   const errors = [];
+  const cleanups = new Set();
   let rootId;
   let revision = 0;
   let latest;
@@ -46,6 +47,12 @@ export function composeStreamFixture(context, { projectTree = true, inspectStora
   /** Supplies an actual call-owned sink while retaining fixture-specific host environment methods. */
   function sink() {
     return { ...context.__operit_call_runtime_ref, sendComposeResponse: accept,
+      /** Models call-owned subscription cleanup independently of command completion. */
+      onCleanup(cleanup) {
+        const owner = { cleanup };
+        cleanups.add(owner);
+        return () => { cleanups.delete(owner); };
+      },
       /** Records detached errors independently of an already settled command. */
       reportError(error) { errors.push(error); },
     };

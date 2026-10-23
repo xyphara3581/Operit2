@@ -383,6 +383,7 @@ impl HostJavaScriptRuntimeHost for WebHostJavaScriptRuntimeHost {
     fn createHostJavaScriptRuntimeState(
         &self,
         _taskName: &str,
+        _kind: operit_host_api::HostJavaScriptRuntimeStateKind,
         factory: HostJavaScriptRuntimeStateFactory,
     ) -> HostResult<HostJavaScriptRuntimeStateHandle> {
         let stateId = NEXT_JAVASCRIPT_STATE_ID.fetch_add(1, Ordering::Relaxed);
@@ -402,10 +403,9 @@ impl HostJavaScriptRuntimeHost for WebHostJavaScriptRuntimeHost {
     fn executeHostJavaScriptRuntimeStateTask(
         &self,
         handle: HostJavaScriptRuntimeStateHandle,
-        timeoutMillis: u64,
+        interrupt: HostJavaScriptExecutionInterrupt,
         task: HostJavaScriptRuntimeStateTask,
     ) -> HostResult<HostJavaScriptRuntimeStateOutput> {
-        let interrupt = HostJavaScriptExecutionInterrupt::new(timeoutMillis)?;
         let state = JAVASCRIPT_STATES
             .with(|states| states.borrow_mut().remove(&handle.id))
             .ok_or_else(|| {
@@ -432,7 +432,7 @@ impl HostJavaScriptRuntimeHost for WebHostJavaScriptRuntimeHost {
     fn enqueueHostJavaScriptRuntimeStateTask(
         &self,
         handle: HostJavaScriptRuntimeStateHandle,
-        timeoutMillis: u64,
+        interrupt: HostJavaScriptExecutionInterrupt,
         task: HostJavaScriptRuntimeStateTask,
     ) -> HostResult<()> {
         JAVASCRIPT_STATE_LOCKS.with(|locks| {
@@ -447,7 +447,7 @@ impl HostJavaScriptRuntimeHost for WebHostJavaScriptRuntimeHost {
         })?;
         let pending = self.executeHostJavaScriptRuntimeStateAsyncTask(
             handle,
-            timeoutMillis,
+            interrupt,
             Box::new(move |state, interrupt| Box::pin(std::future::ready(task(state, interrupt)))),
         );
         wasm_bindgen_futures::spawn_local(async move {
@@ -462,7 +462,7 @@ impl HostJavaScriptRuntimeHost for WebHostJavaScriptRuntimeHost {
     fn executeHostJavaScriptRuntimeStateAsyncTask(
         &self,
         handle: HostJavaScriptRuntimeStateHandle,
-        timeoutMillis: u64,
+        interrupt: HostJavaScriptExecutionInterrupt,
         task: HostJavaScriptRuntimeStateAsyncTask,
     ) -> HostJavaScriptRuntimeStateOutputFuture {
         let stateLock = JAVASCRIPT_STATE_LOCKS.with(|locks| {
@@ -495,7 +495,6 @@ impl HostJavaScriptRuntimeHost for WebHostJavaScriptRuntimeHost {
                 stateId: handle.id,
                 state: Some(state),
             };
-            let interrupt = HostJavaScriptExecutionInterrupt::new(timeoutMillis)?;
             task(
                 lease
                     .state

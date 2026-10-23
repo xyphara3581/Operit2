@@ -501,7 +501,9 @@ impl PromptHistoryHookDispatcher for RuntimePromptHistoryHooks {
     fn dispatch_prompt_history_hooks(
         &self,
         context: HistoryHookContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HistoryHookContext> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<HistoryHookContext, String>> + Send + '_>,
+    > {
         Box::pin(async move {
             let dispatched = PromptHookRegistry::dispatchPromptHistoryHooks(PromptHookContext {
                 stage: context.stage.clone(),
@@ -518,11 +520,10 @@ impl PromptHistoryHookDispatcher for RuntimePromptHistoryHooks {
                 model_parameters: Vec::new(),
                 available_tools: Vec::new(),
                 metadata: btree_to_value_map(&context.metadata),
-                on_hook_timeout: None,
             })
-            .await;
+            .await?;
 
-            HistoryHookContext {
+            Ok(HistoryHookContext {
                 stage: dispatched.stage,
                 chat_id: dispatched.chat_id,
                 prompt_function_type: dispatched
@@ -535,7 +536,7 @@ impl PromptHistoryHookDispatcher for RuntimePromptHistoryHooks {
                 prepared_history: dispatched.prepared_history,
                 use_english: dispatched.use_english,
                 metadata: value_to_btree_map(dispatched.metadata),
-            }
+            })
         })
     }
 }
@@ -771,14 +772,15 @@ impl EnhancedAIService {
         Ok(windowSize)
     }
 
+    /// Applies final prompt hooks and preserves execution failures for the caller.
     pub async fn applyPromptFinalizeHooks<F, Fut>(
         &self,
         initialContext: PromptHookContext,
         dispatchHooks: F,
-    ) -> PromptHookContext
+    ) -> Result<PromptHookContext, String>
     where
         F: FnOnce(PromptHookContext) -> Fut,
-        Fut: std::future::Future<Output = PromptHookContext>,
+        Fut: std::future::Future<Output = Result<PromptHookContext, String>>,
     {
         dispatchHooks(initialContext).await
     }
@@ -1650,7 +1652,8 @@ impl EnhancedAIService {
                 },
                 PromptHookRegistry::dispatchPromptFinalizeHooks,
             )
-            .await;
+            .await
+            .map_err(AiServiceError::RequestFailed)?;
         lifecycle.push(SendMessageLifecycleStage::BeforeFinalizePromptHook);
         if let Some(processedInput) = beforeFinalizeContext.processed_input.clone() {
             finalProcessedInput = processedInput;
@@ -1667,7 +1670,8 @@ impl EnhancedAIService {
                 },
                 PromptHookRegistry::dispatchPromptFinalizeHooks,
             )
-            .await;
+            .await
+            .map_err(AiServiceError::RequestFailed)?;
         lifecycle.push(SendMessageLifecycleStage::BeforeSendToModelHook);
         if let Some(processedInput) = beforeSendContext.processed_input.clone() {
             finalProcessedInput = processedInput;

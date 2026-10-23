@@ -1,6 +1,10 @@
 package app.operit
 
 object OperitRuntimeNative {
+    /** Submits synchronous Java work to the native Host blocking scheduler. */
+    @JvmStatic external fun scheduleRuntimeTask(task: Runnable)
+    /** Reserves all native service workers required by one blocking pipeline. */
+    @JvmStatic external fun scheduleRuntimeServices(tasks: Array<Runnable>)
     /** Accepts borrowed pipe handles from the Plugin SDK Binder endpoint. */
     @JvmStatic external fun acceptPluginSdkPipes(reader: Int, writer: Int)
     init {

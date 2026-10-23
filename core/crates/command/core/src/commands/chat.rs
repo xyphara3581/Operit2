@@ -403,6 +403,7 @@ async fn create_chat(
         core.createNewChat(
             options.setAsCurrentChat,
             options.sourceChatId.clone(),
+            None,
             options.input.clone(),
         )
         .await

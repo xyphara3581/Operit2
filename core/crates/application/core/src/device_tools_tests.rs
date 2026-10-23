@@ -276,7 +276,7 @@ async fn device_tools_direct_calls_skip_ai_policy_and_preserve_transport_semanti
             await Tools.device(params.node).call('internal_probe',{});
             return {local:local.exists,remote:remote.exists};
         };"#.into(),
-        "run".into(), params, Default::default(), None, false, 10000,
+        "run".into(), params, Default::default(), None, false,
     ).await.unwrap().unwrap();
     engine.destroy();
     let result: serde_json::Value = serde_json::from_str(&result).unwrap();

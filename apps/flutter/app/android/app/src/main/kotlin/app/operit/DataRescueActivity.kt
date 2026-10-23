@@ -4,7 +4,6 @@ import android.os.Bundle
 import android.os.Process
 import android.content.Intent
 import android.util.Log
-import java.util.concurrent.Executors
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -14,9 +13,7 @@ import org.json.JSONObject
 /** Hosts storage maintenance in a separate process without normal owner-system initialization. */
 class DataRescueActivity : FlutterActivity() {
     private lateinit var storageHost: AndroidRuntimeHost
-    private val rescueRequests = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "operit-rescue-channel")
-    }
+    private val rescueRequests = HostTaskExecutor(serial = true)
 
     /** Selects the maintenance route before Dart initializes any business service. */
     override fun getInitialRoute(): String = "/data-rescue"

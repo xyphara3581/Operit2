@@ -57,6 +57,7 @@ class ToolPkgDesktopWidgetFrame {
             onAction: openRoute,
             onTextInput: openRoute,
             webViewHostContext: ComposeDslWebViewHostContext(
+              clients: clients,
               packageName: definition.containerPackageName,
               routeInstanceId: instanceId,
               executionContextKey: 'desktop-widget:$instanceId',

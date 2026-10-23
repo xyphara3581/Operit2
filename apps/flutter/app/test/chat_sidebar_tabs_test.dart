@@ -396,6 +396,7 @@ void main() {
       'locked': true,
       'pinned': true,
       'group': 'legacy-native-folder',
+      'parentChatId': null,
     });
     expect(summary.keys.toSet(), {
       'id',
@@ -407,6 +408,7 @@ void main() {
       'locked',
       'pinned',
       'group',
+      'parentChatId',
     });
   });
 
@@ -1582,6 +1584,7 @@ void main() {
           expect(request.args, {
             'setAsCurrentChat': true,
             'sourceChatId': source,
+            'parentChatId': null,
             'input': null,
           });
           expect(activations, 1);
@@ -1868,6 +1871,7 @@ core.ChatHistoryListItem _chat(String id, {String? title}) =>
       'locked': true,
       'pinned': true,
       'group': 'legacy-native-folder',
+      'parentChatId': null,
       'characterCardName': 'legacy-card-not-forwarded',
       'characterGroupId': 'legacy-subject-not-forwarded',
     });
@@ -2178,6 +2182,7 @@ Future<void> _flushPreparation() async {
 
 core.ChatHistoryListItem _preparationChat(String id) =>
     core.ChatHistoryListItem(
+      parentChatId: null,
       id: id,
       title: id,
       updatedAt: '1',

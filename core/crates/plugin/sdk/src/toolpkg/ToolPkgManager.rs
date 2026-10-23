@@ -882,53 +882,60 @@ fn joinToolPkgSourcePath(sourcePath: &str, entryPath: &str) -> String {
 }
 
 impl ToolPkgHookDispatcher for ToolPkgManager {
-    /// Invokes one ToolPkg hook using its container main script and execution context.
+    /// Preserves typed failures and applies a deadline only to an explicitly timed before hook.
     #[allow(non_snake_case)]
     fn dispatchToolPkgHook(
         &self,
         enabledPackageNames: &[String],
         invocation: ToolPkgHookInvocation,
-    ) -> crate::javascript::JsExecutionCompletion<Result<Option<String>, String>> {
+    ) -> crate::javascript::JsExecutionCompletion<
+        crate::execution_result::JsExecutionResult<Option<String>>,
+    > {
         let prepared = self.prepareToolPkgHook(enabledPackageNames, &invocation);
         Box::pin(async move {
-            let (engine, script, params, _lease) = prepared?;
-            engine
-                .execute_script_function_with_timeout_millis(
-                    &script,
-                    &invocation.functionName,
-                    &params,
-                    &invocation.envOverrides,
-                    invocation.onIntermediateResult,
-                    invocation.dispatchIntermediateOnMain,
-                    invocation.timeoutMillis,
-                )
-                .await
-                .map_err(|error| error.to_string())
+            let (engine, script, params, _lease) =
+                prepared.map_err(crate::execution_result::JsExecutionError::invalid_request)?;
+            match invocation.timeoutMillis {
+                Some(timeout) => {
+                    engine
+                        .execute_script_function_with_timeout_millis(
+                            &script,
+                            &invocation.functionName,
+                            &params,
+                            &invocation.envOverrides,
+                            invocation.onIntermediateResult,
+                            invocation.dispatchIntermediateOnMain,
+                            timeout,
+                        )
+                        .await
+                }
+                None => {
+                    engine
+                        .execute_script_function(
+                            &script,
+                            &invocation.functionName,
+                            &params,
+                            &invocation.envOverrides,
+                            invocation.onIntermediateResult,
+                            invocation.dispatchIntermediateOnMain,
+                        )
+                        .await
+                }
+            }
         })
     }
 }
 
 impl ToolPkgManager {
-    /// Invokes a ToolPkg hook through the host-owned asynchronous execution boundary.
+    /// Uses the same typed lifecycle contract for asynchronous hook dispatch.
     #[allow(non_snake_case)]
     pub async fn dispatchToolPkgHookAsync(
         &self,
         enabledPackageNames: &[String],
         invocation: ToolPkgHookInvocation,
-    ) -> Result<Option<String>, String> {
-        let (engine, script, params, _lease) = self.prepareToolPkgHook(enabledPackageNames, &invocation)?;
-        engine
-            .execute_script_function_async(
-                script,
-                invocation.functionName,
-                params,
-                invocation.envOverrides,
-                invocation.onIntermediateResult,
-                invocation.dispatchIntermediateOnMain,
-                invocation.timeoutMillis,
-            )
+    ) -> crate::execution_result::JsExecutionResult<Option<String>> {
+        self.dispatchToolPkgHook(enabledPackageNames, invocation)
             .await
-            .map_err(|error| error.to_string())
     }
 
     /// Resolves the engine, script, and event parameters shared by hook execution APIs.
@@ -1265,19 +1272,29 @@ mod tests {
     }
 
     impl JsExecutionEngine for RecordingExecutionEngine {
-        /// Returns no script result for registry tests.
+        /// Records hook parameters and yields once through the canonical host execution API.
         fn execute_script_function(
             &self,
             _script: &str,
             _function_name: &str,
-            _params: &BTreeMap<String, Value>,
+            params: &BTreeMap<String, Value>,
             _env_overrides: &BTreeMap<String, String>,
             _on_intermediate_result: Option<Arc<dyn Fn(String) + Send + Sync>>,
             _dispatch_intermediate_on_main: bool,
-            _timeout_sec: u64,
         ) -> crate::javascript::JsExecutionCompletion<JsExecutionResult<Option<String>>> {
-            let result = (|| Ok(None))();
-            Box::pin(std::future::ready(result))
+            *self
+                .asyncHookParams
+                .lock()
+                .expect("async hook params mutex poisoned") = Some(params.clone());
+            let mut yielded = false;
+            Box::pin(std::future::poll_fn(move |context| {
+                if yielded {
+                    return std::task::Poll::Ready(Ok(Some("hook completed".to_string())));
+                }
+                yielded = true;
+                context.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }))
         }
 
         /// Returns no script result for exact-deadline registry tests.
@@ -1304,21 +1321,15 @@ mod tests {
             _env_overrides: BTreeMap<String, String>,
             _on_intermediate_result: Option<Arc<dyn Fn(String) + Send + Sync>>,
             _dispatch_intermediate_on_main: bool,
-            _timeout_millis: u64,
         ) -> crate::javascript::JsExecutionFuture<JsExecutionResult<Option<String>>> {
-            *self
-                .asyncHookParams
-                .lock()
-                .expect("async hook params mutex poisoned") = Some(params);
-            let mut yielded = false;
-            Box::pin(std::future::poll_fn(move |context| {
-                if yielded {
-                    return std::task::Poll::Ready(Ok(Some("hook completed".to_string())));
-                }
-                yielded = true;
-                context.waker().wake_by_ref();
-                std::task::Poll::Pending
-            }))
+            self.execute_script_function(
+                &_script,
+                &_function_name,
+                &params,
+                &_env_overrides,
+                _on_intermediate_result,
+                _dispatch_intermediate_on_main,
+            )
         }
 
         /// Returns an empty ToolPkg registration capture for registry tests.
@@ -1788,7 +1799,7 @@ mod tests {
                 runtimeKind: None,
                 envOverrides: BTreeMap::new(),
                 timestampMs: 1,
-                timeoutMillis: 60_000,
+                timeoutMillis: None,
                 dispatchIntermediateOnMain: true,
                 onIntermediateResult: None,
             },
@@ -1848,7 +1859,7 @@ mod tests {
                 runtimeKind: None,
                 envOverrides: BTreeMap::new(),
                 timestampMs: 1,
-                timeoutMillis: 1_000,
+                timeoutMillis: Some(1_000),
                 dispatchIntermediateOnMain: true,
                 onIntermediateResult: None,
             },

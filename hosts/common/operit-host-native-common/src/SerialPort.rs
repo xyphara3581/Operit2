@@ -269,8 +269,14 @@ mod hardware_tests {
 async fn readUartChunk<R: tokio::io::AsyncRead + Unpin>(reader: &mut R) -> HostResult<Vec<u8>> {
     let mut bytes = vec![0; 4096];
     loop {
-        let count = reader.read(&mut bytes).await.map_err(|e| HostError::new(e.to_string()))?;
-        if count > 0 { bytes.truncate(count); return Ok(bytes); }
+        let count = reader
+            .read(&mut bytes)
+            .await
+            .map_err(|e| HostError::new(e.to_string()))?;
+        if count > 0 {
+            bytes.truncate(count);
+            return Ok(bytes);
+        }
         // Avoid spinning; the outer explicit-close select remains cancellable.
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
@@ -278,23 +284,43 @@ async fn readUartChunk<R: tokio::io::AsyncRead + Unpin>(reader: &mut R) -> HostR
 #[cfg(test)]
 mod idle_completion_tests {
     use super::*;
-    use std::{pin::Pin, task::{Context,Poll}};
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
     struct ZeroThenData(usize);
     impl tokio::io::AsyncRead for ZeroThenData {
-        fn poll_read(mut self: Pin<&mut Self>, _: &mut Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
             self.0 += 1;
-            if self.0 > 2 { buf.put_slice(b"frame"); }
+            if self.0 > 2 {
+                buf.put_slice(b"frame");
+            }
             Poll::Ready(Ok(()))
         }
     }
     #[tokio::test]
     async fn idle_zero_byte_completions_do_not_end_the_uart_session() {
-        let bytes = tokio::time::timeout(std::time::Duration::from_secs(1), readUartChunk(&mut ZeroThenData(0))).await.unwrap().unwrap();
-        assert_eq!(bytes,b"frame");
+        let bytes = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            readUartChunk(&mut ZeroThenData(0)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(bytes, b"frame");
     }
     #[tokio::test]
     async fn repeated_idle_completions_remain_cancellable() {
         let mut empty = tokio::io::empty();
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), readUartChunk(&mut empty)).await.is_err());
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            readUartChunk(&mut empty)
+        )
+        .await
+        .is_err());
     }
 }

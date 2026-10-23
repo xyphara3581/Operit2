@@ -609,3 +609,40 @@ async fn public_api_and_ipc_preserve_the_engine_after_installation_settings_chan
     invalid_caller.dependency_caller = Some(package.into());
     assert!(invokeToolPkgIpc(&handler, invalid_caller).await.is_err());
 }
+
+/// Keeps a real default-enabled bundled subpackage disabled across catalog reloads and container toggles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bundled_subpackage_toggle_preserves_explicit_state() {
+    let _test_guard = SHARED_CONCURRENCY_TEST_LOCK.lock().await;
+    let storage = register_test_runtime_roots();
+    let mut hosts = HostManager::withFileSystemHost(Arc::new(PosixFileSystemHost::new()));
+    hosts.runtimeStorageHost = Some(storage.clone());
+    hosts.runtimeSqliteHost = Some(storage);
+    hosts.hostSecretStore = Some(Arc::new(TestSecretStore::default()));
+    hosts.hostJavaScriptRuntimeHost = Some(Arc::new(NativeHostJavaScriptRuntimeHost::new()));
+    hosts.hostRuntimeTaskSchedulerHost = Some(Arc::new(NativeHostRuntimeTaskSchedulerHost::new()));
+    configure_package_hosts(&mut hosts);
+    let app = OperitApplication::newWithContext(hosts);
+    let packages = app.packageManager();
+    let mut manager = packages.lock().unwrap();
+    manager.loadAvailablePackages();
+    let container = "com.operit.plan_mode_bundle";
+    let child = "plan_mode_tools";
+    assert!(manager.isPackageEnabled(child));
+    assert!(manager.setToolPkgSubpackageEnabled(child, false), "default-enabled child must accept disablement");
+    assert!(!manager.isPackageEnabled(child));
+    assert!(!manager.getToolPkgContainerDetails(container, false).unwrap().subpackages[0].enabled);
+    manager.loadAvailablePackages();
+    assert!(!manager.isPackageEnabled(child), "catalog reload must retain explicit disablement");
+    manager.disablePackage(container);
+    manager.enablePackage(container);
+    assert!(!manager.isPackageEnabled(child), "container activation must retain child preference");
+    assert!(manager.setToolPkgSubpackageEnabled(child, true));
+    assert!(manager.isPackageEnabled(child));
+    manager.disablePackage(container);
+    assert!(!manager.isPackageEnabled(child), "a disabled container cannot expose its child");
+    assert!(manager.setToolPkgSubpackageEnabled(child, true));
+    assert!(!manager.isPackageEnabled(child), "editing a child must not enable its container");
+    manager.enablePackage(container);
+    assert!(manager.isPackageEnabled(child));
+}

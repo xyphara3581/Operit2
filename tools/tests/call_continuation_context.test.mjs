@@ -8,7 +8,7 @@ const bootstrap = readFileSync(new URL("../../core/crates/plugin/javascript-brid
 /** Exercises the real call registry and Promise continuation bridge without a permissive fake activator. */
 test("shared Promise subscribers retain independent owners through fulfillment, rejection and nested continuations", async () => {
   for (const rejected of [false, true]) {
-    const sandbox = vm.createContext({});
+    const sandbox = vm.createContext({ /** Receives the active native execution owner. */ __operitNativeActivateCall() {} });
     vm.runInContext(bootstrap, sandbox);
     const results = vm.runInContext(`
       var resolveShared, rejectShared;
@@ -39,7 +39,7 @@ test("shared Promise subscribers retain independent owners through fulfillment, 
 
 /** Cancelling the owner cannot lend the continuation another live call's credentials. */
 test("cancelled callbacks preserve their own identity and restore the outer call even after throwing", async () => {
-  const sandbox = vm.createContext({});
+  const sandbox = vm.createContext({ /** Receives the active native execution owner. */ __operitNativeActivateCall() {} });
   vm.runInContext(bootstrap, sandbox);
   const result = vm.runInContext(`
     var resolveCancelled;
@@ -69,7 +69,7 @@ test("cancelled callbacks preserve their own identity and restore the outer call
 /** Fulfillment, rejection and nested subscriptions retain cancelled ownership without runtime access. */
 test("cancelled fulfillment and rejection keep their identity through nested continuations", async () => {
   for (const rejected of [false, true]) {
-    const sandbox = vm.createContext({});
+    const sandbox = vm.createContext({ /** Receives the active native execution owner. */ __operitNativeActivateCall() {} });
     vm.runInContext(bootstrap, sandbox);
     const result = vm.runInContext(`
       var settle;
@@ -109,7 +109,7 @@ test("cancelled fulfillment and rejection keep their identity through nested con
 
 /** A cancelled continuation cannot restore an outer runtime cancelled during that callback. */
 test("cancelled callbacks do not restore an outer session removed during execution", async () => {
-  const sandbox = vm.createContext({});
+  const sandbox = vm.createContext({ /** Receives the active native execution owner. */ __operitNativeActivateCall() {} });
   vm.runInContext(bootstrap, sandbox);
   const result = vm.runInContext(`
     var resolvePending;
@@ -135,7 +135,7 @@ test("cancelled callbacks do not restore an outer session removed during executi
 
 /** Completing one asynchronous hook preserves the context restored by its finalization. */
 test("completed callbacks preserve the surviving call context selected by finalization", async () => {
-  const sandbox = vm.createContext({});
+  const sandbox = vm.createContext({ /** Receives the active native execution owner. */ __operitNativeActivateCall() {} });
   vm.runInContext(bootstrap, sandbox);
   const result = vm.runInContext(`
     var outer = __operitRegisterCallSession('suspended-owner', {});
@@ -155,4 +155,60 @@ test("completed callbacks preserve the surviving call context selected by finali
   assert.equal(vm.runInContext("__operitCurrentCallId", sandbox), "suspended-owner");
   assert.equal(vm.runInContext("__operit_call_runtime_ref === outer.callRuntime", sandbox), true);
   assert.equal(vm.runInContext("__operitGetCallState('hook')", sandbox), null);
+});
+
+/** Native await must resume under the host request owner while another call remains live. */
+test("native await retains the host completion owner across an overlapping hook", async () => {
+  for (const rejected of [false, true]) {
+    const sandbox = vm.createContext({ /** Receives the active native execution owner. */ __operitNativeActivateCall() {} });
+    vm.runInContext(bootstrap, sandbox);
+    for (const path of ["../../hosts/web/src/javascript_promises.js", "../../core/crates/plugin/sdk/src/JsExecutionRuntimeBridge.script.js"]) {
+      vm.runInContext(readFileSync(new URL(path, import.meta.url), "utf8"), sandbox);
+    }
+    const result = vm.runInContext(`
+      var request;
+      __operitNativeCallToolStructured = __operitHostPromiseRegistry.binding(function(id) { request = id; });
+      var owner = __operitRegisterCallSession('host-owner', {});
+      owner.callRuntime = { callId: 'host-owner' };
+      __operitActivateCall('host-owner');
+      var completion = (async function() {
+        var value;
+        try { value = await toolCall('echo', {}); }
+        catch (error) { value = error.message; }
+        return { owner: __operitCurrentCallId, runtime: __operit_call_runtime_ref.callId,
+          hasState: __operitGetCallState(__operitCurrentCallId) === owner, value: value };
+      })();
+      var hook = __operitRegisterCallSession('overlapping-hook', {});
+      hook.callRuntime = { callId: 'overlapping-hook' };
+      __operitActivateCall('overlapping-hook');
+      __operitHostPromiseRegistry.settle(request, ${rejected ? "'host failure', true" : "{success: true, data: 'host result'}, false"});
+      completion;
+    `, sandbox);
+    assert.deepEqual(JSON.parse(JSON.stringify(await result)), {
+      owner: "host-owner", runtime: "host-owner", hasState: true, value: rejected ? "host failure" : "host result",
+    });
+  }
+});
+
+/** Restoring a surviving call must read its runtime from the same live registry entry. */
+test("retiring nested hooks never restores the runtime of an already retired parent", () => {
+  const sandbox = vm.createContext({ /** Receives the active native execution owner. */ __operitNativeActivateCall() {} });
+  vm.runInContext(bootstrap, sandbox);
+  const report = vm.runInContext(`
+    var outer = __operitRegisterCallSession('outer', {});
+    outer.callRuntime = { callId: 'outer' };
+    __operitActivateCall('outer');
+    var parent = __operitRegisterCallSession('parent-hook', {});
+    parent.callRuntime = { callId: 'parent-hook' };
+    parent.previousCallId = 'outer'; parent.previousCallRuntime = outer.callRuntime;
+    __operitActivateCall('parent-hook');
+    var nested = __operitRegisterCallSession('nested-hook', {});
+    nested.callRuntime = { callId: 'nested-hook' };
+    nested.previousCallId = 'parent-hook'; nested.previousCallRuntime = parent.callRuntime;
+    __operitActivateCall('nested-hook');
+    __operitCancelCallSession('parent-hook');
+    __operitCancelCallSession('nested-hook');
+    ({ callId: __operitCurrentCallId, runtime: __operit_call_runtime_ref.callId });
+  `, sandbox);
+  assert.deepEqual(structuredClone(report), { callId: "outer", runtime: "outer" });
 });

@@ -125,8 +125,7 @@ class WebWasmCoreProxy extends CoreProxy {
     final subscriptionId =
         'web-watch-${DateTime.now().microsecondsSinceEpoch}-${_nextWebWatchSubscriptionIndex++}';
     final controller = StreamController<CoreEvent>();
-    var opened = false;
-    var canceled = false;
+    var openingFailed = false;
     late final JSFunction onEvent;
     onEvent = ((JSUint8Array frameBytes) {
       _dispatchWatchFrame(controller, subscriptionId, frameBytes.toDart);
@@ -152,11 +151,8 @@ class WebWasmCoreProxy extends CoreProxy {
                   'web watch subscription id mismatch: $openedSubscriptionId',
             );
           }
-          opened = true;
-          if (canceled) {
-            await _closeNativeWebWatchStream(subscriptionId);
-          }
         } catch (error, stackTrace) {
+          openingFailed = true;
           if (!controller.isClosed) {
             controller.addError(error, stackTrace);
             await controller.close();
@@ -165,8 +161,7 @@ class WebWasmCoreProxy extends CoreProxy {
       }());
     };
     controller.onCancel = () async {
-      canceled = true;
-      if (opened) {
+      if (!openingFailed) {
         await _closeNativeWebWatchStream(subscriptionId);
       }
     };
@@ -216,6 +211,7 @@ class _WebCorePushSink implements CorePushSink {
 
 int _nextWebWatchSubscriptionIndex = 0;
 
+/// Routes explicit value, error, and terminal notifications from the shared owner.
 void _dispatchWatchFrame(
   StreamController<CoreEvent> controller,
   String subscriptionId,
@@ -225,18 +221,30 @@ void _dispatchWatchFrame(
     return;
   }
   try {
-    final frame = decodeNativeCoreWatchFrame(frameBytes);
-    if (frame.subscriptionId != subscriptionId) {
-      throw CoreLinkError(
-        code: 'INVALID_RESPONSE',
-        message: 'web watch subscription id mismatch: ${frame.subscriptionId}',
-      );
+    if (frameBytes.length < 9) {
+      throw const FormatException('Truncated Core watch frame');
     }
-    final event = frame.event;
-    controller.add(event);
-    if (event.kind == 'Completed') {
-      unawaited(_closeNativeWebWatchStream(subscriptionId));
-      unawaited(controller.close());
+    final payload = Uint8List.sublistView(frameBytes, 9);
+    switch (frameBytes[0]) {
+      case 1:
+        final frame = decodeNativeCoreWatchFrame(payload);
+        if (frame.subscriptionId != subscriptionId) {
+          throw CoreLinkError(
+            code: 'INVALID_RESPONSE',
+            message:
+                'web watch subscription id mismatch: ${frame.subscriptionId}',
+          );
+        }
+        controller.add(frame.event);
+      case 2:
+        decodeNativeCoreVoidResult(payload);
+        throw const FormatException('Expected Core watch error');
+      case 3:
+        unawaited(controller.close());
+      default:
+        throw FormatException(
+          'Unknown Core watch frame kind: ${frameBytes[0]}',
+        );
     }
   } catch (error, stackTrace) {
     controller.addError(error, stackTrace);

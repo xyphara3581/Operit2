@@ -64,7 +64,7 @@ impl ToolPkgXmlRenderBridge {
     /// Synchronizes active XML render hook registrations from enabled ToolPkg containers.
     #[allow(non_snake_case)]
     pub fn syncToolPkgRegistrations(activeContainers: &[ToolPkgContainerRuntime]) {
-        let mut hooks = activeContainers
+        let hooks = activeContainers
             .iter()
             .flat_map(|container| {
                 container
@@ -79,12 +79,6 @@ impl ToolPkgXmlRenderBridge {
                     })
             })
             .collect::<Vec<_>>();
-        hooks.sort_by(|left, right| {
-            left.tag
-                .cmp(&right.tag)
-                .then(left.containerPackageName.cmp(&right.containerPackageName))
-                .then(left.pluginId.cmp(&right.pluginId))
-        });
         xmlRenderRegistry().replace(hooks);
     }
 

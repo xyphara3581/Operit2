@@ -31,7 +31,7 @@ impl ToolPkgAppLifecycleHookBridge {
             .lock()
             .expect("toolpkg app lifecycle hook mutex poisoned")
             .clone();
-        let mut nextHooks = activeContainers
+        let nextHooks = activeContainers
             .iter()
             .flat_map(|container| {
                 container
@@ -46,12 +46,6 @@ impl ToolPkgAppLifecycleHookBridge {
                     })
             })
             .collect::<Vec<_>>();
-        nextHooks.sort_by(|left, right| {
-            left.event
-                .cmp(&right.event)
-                .then(left.containerPackageName.cmp(&right.containerPackageName))
-                .then(left.hookId.cmp(&right.hookId))
-        });
         *APP_LIFECYCLE_HOOKS
             .get_or_init(|| Mutex::new(Vec::new()))
             .lock()

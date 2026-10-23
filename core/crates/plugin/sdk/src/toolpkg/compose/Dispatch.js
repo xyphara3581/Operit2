@@ -33,6 +33,7 @@ function runComposeAction(bundle, entry, request, responseSink) {
   // Even no-render and asynchronous business actions can change plain JS refs.
   if (!viewportOnly) OperitComposeReactive.invalidateContent(bundle.ctx);
   var noRender = payload && typeof payload === 'object' && (payload.__no_render === true || payload.__noRender === true || payload.__local === true);
+  bundle.activeCommands += 1;
   var actionSettled = false;
   var actionFinalizing = false;
   var intermediateRenderTask = Promise.resolve();
@@ -60,6 +61,7 @@ function runComposeAction(bundle, entry, request, responseSink) {
     return !!(callState && callState.detached);
   }
   function finalizeAction() {
+    bundle.activeCommands -= 1;
     actionSettled = true;
     var callId = String(typeof __operitCurrentCallId === 'string' ? __operitCurrentCallId : '');
     var callState = typeof __operitGetCallState === 'function' ? __operitGetCallState(callId) : null;

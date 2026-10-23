@@ -8,7 +8,7 @@ use syn::punctuated::Punctuated;
 use syn::visit::Visit;
 use syn::{
     Attribute, ExprPath, ImplItemFn, ItemConst, ItemExternCrate, ItemFn, ItemMod, ItemStatic,
-    ItemUse, Lit, Meta, Path as SynPath, Token, TraitItemFn, TypePath, UseTree,
+    ItemUse, ItemImpl, Lit, Meta, Path as SynPath, Token, TraitItemFn, TypePath, UseTree,
 };
 
 use super::SourceRoot;
@@ -239,6 +239,14 @@ impl<'ast> Visit<'ast> for PlatformApiVisitor<'_> {
         syn::visit::visit_item_fn(self, item);
     }
 
+    /// Skips entire test-only or native-only implementations, including their methods.
+    fn visit_item_impl(&mut self, item: &ItemImpl) {
+        if is_excluded_from_wasm(&item.attrs) {
+            return;
+        }
+        syn::visit::visit_item_impl(self, item);
+    }
+
     /// Skips associated function bodies that cannot be selected for the Wasm target.
     fn visit_impl_item_fn(&mut self, item: &ImplItemFn) {
         if is_excluded_from_wasm(&item.attrs) {
@@ -378,4 +386,33 @@ fn parse_cfg_conditions(list: &syn::MetaList) -> Option<Vec<Meta>> {
         .parse2(list.tokens.clone())
         .ok()
         .map(|conditions| conditions.into_iter().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn violations(source: &str) -> BTreeSet<PlatformApiViolation> {
+        let root = SourceRoot::new(PathBuf::from("src"), "test_crate");
+        let mut violations = BTreeSet::new();
+        let mut visitor = PlatformApiVisitor::new(&root, Path::new("src/test.rs"), &mut violations);
+        visitor.visit_file(&syn::parse_file(source).unwrap());
+        violations
+    }
+
+    #[test]
+    fn ignores_platform_calls_in_test_only_and_native_only_impls() {
+        assert!(violations(r#"
+            #[cfg(test)] impl Storage { fn flush() { std::fs::read("fixture"); } }
+            #[cfg(not(target_arch = "wasm32"))]
+            impl NativeStorage { fn read() { std::fs::read("file"); } }
+        "#).is_empty());
+    }
+
+    #[test]
+    fn continues_rejecting_platform_calls_in_shared_impls() {
+        let found = violations(r#"impl Storage { fn read() { std::fs::read("file"); } }"#);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found.first().unwrap().api, "std::fs");
+    }
 }

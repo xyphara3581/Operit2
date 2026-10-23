@@ -23,6 +23,7 @@ import '../../theme/OperitTheme.dart';
 import '../../window/DetachedChatWindowLauncher.dart';
 import '../../window/OperitWindowPlatform.dart';
 import 'CollapsedDrawerContent.dart';
+import 'ChatHistoryTree.dart';
 import '../../common/components/M3LoadingIndicator.dart';
 import 'DrawerContentDialogs.dart';
 import 'NavigationDrawerAppearance.dart';
@@ -78,6 +79,9 @@ class _DrawerContentState extends State<DrawerContent> {
   String? _errorMessage;
   final Set<String> _collapsedGroups = {};
   bool _groupMutationPending = false;
+  final Set<String> _expandedParents = {};
+  late ChatHistoryTree _historyTree;
+  Set<String> _matchingHistoryIds = {};
 
   /// Uses the actual receiving bridge for native conversation operations.
   GeneratedCoreProxyClients get _clients =>
@@ -160,6 +164,7 @@ class _DrawerContentState extends State<DrawerContent> {
       await chatCore.createNewChat(
         setAsCurrentChat: true,
         sourceChatId: sourceChatId,
+        parentChatId: null,
         input: null,
       );
       onActivated();
@@ -419,14 +424,19 @@ class _DrawerContentState extends State<DrawerContent> {
   /// Projects the full canonical order into native workspace sections and search matches.
   List<_WorkspaceSection> _workspaceSections({bool filter = true}) {
     final query = _searchController.text.trim().toLowerCase();
+    _historyTree = ChatHistoryTree(widget.histories);
+    _matchingHistoryIds = _historyTree.matching(
+      (history) =>
+          history.title.toLowerCase().contains(query) ||
+          _workspaceLabel(history).toLowerCase().contains(query) ||
+          (history.group ?? '未分组').toLowerCase().contains(query),
+    );
     final sections = <String, _WorkspaceSection>{};
-    for (final history in widget.histories) {
+    for (final history in _historyTree.roots) {
       final label = _workspaceLabel(history);
       if (filter &&
           query.isNotEmpty &&
-          !history.title.toLowerCase().contains(query) &&
-          !label.toLowerCase().contains(query) &&
-          !(history.group ?? '未分组').toLowerCase().contains(query)) {
+          !_matchingHistoryIds.contains(history.id)) {
         continue;
       }
       final key = _workspaceKey(history);
@@ -465,7 +475,8 @@ class _DrawerContentState extends State<DrawerContent> {
     return index >= 0 &&
         target >= 0 &&
         target < widget.histories.length &&
-        _workspaceKey(history) == _workspaceKey(widget.histories[target]);
+        _workspaceKey(history) == _workspaceKey(widget.histories[target]) &&
+        history.parentChatId == widget.histories[target].parentChatId;
   }
 
   /// Moves a native workspace row without reading a role or plugin selection field.
@@ -486,7 +497,8 @@ class _DrawerContentState extends State<DrawerContent> {
     core_proxy.ChatHistoryListItem target,
   ) async {
     if (moved.id == target.id ||
-        _workspaceKey(moved) != _workspaceKey(target)) {
+        _workspaceKey(moved) != _workspaceKey(target) ||
+        moved.parentChatId != target.parentChatId) {
       return;
     }
     if (moved.group != target.group) {
@@ -522,41 +534,90 @@ class _DrawerContentState extends State<DrawerContent> {
       ScreenRouteRegistry.routeIdOf(ScreenRouteRegistry.aiChat);
 
   /// Builds a native row with the original pin, lock, title, delete and detached-window actions.
-  Widget _historyRow(core_proxy.ChatHistoryListItem history) =>
-      ConversationDrawerItem(
-        key: ValueKey('workspace-chat:${history.id}'),
-        history: history,
+  Widget _historyRow(
+    core_proxy.ChatHistoryListItem history, {
+    Widget? childrenToggle,
+  }) => ConversationDrawerItem(
+    key: ValueKey('workspace-chat:${history.id}'),
+    history: history,
+    title: history.title,
+    childrenToggle: childrenToggle,
+    selected: _isChatRouteSelected && widget.currentChatId == history.id,
+    isRunning: widget.activeStreamingChatIds.contains(history.id),
+    appearance: widget.appearance,
+    nested: true,
+    workspaceStyle: true,
+    onClick: () => unawaited(_switchConversation(history)),
+    onRename: () => unawaited(_showRenameConversationDialog(history)),
+    onTogglePinned: () => unawaited(_updateConversationPinned(history)),
+    onToggleLocked: () => unawaited(_updateConversationLocked(history)),
+    onDelete: () => unawaited(_deleteConversation(history)),
+    onSwipeDelete: () => unawaited(_showDeleteConversationDialog(history)),
+    onLongPress: () => unawaited(_showConversationActionDialog(history)),
+    canDetach: operitSupportsDesktopMultiWindow,
+    onDetach: () => unawaited(
+      DetachedChatWindowLauncher.openChat(
+        chatId: history.id,
         title: history.title,
-        selected: _isChatRouteSelected && widget.currentChatId == history.id,
-        isRunning: widget.activeStreamingChatIds.contains(history.id),
-        appearance: widget.appearance,
-        nested: true,
-        workspaceStyle: true,
-        onClick: () => unawaited(_switchConversation(history)),
-        onRename: () => unawaited(_showRenameConversationDialog(history)),
-        onTogglePinned: () => unawaited(_updateConversationPinned(history)),
-        onToggleLocked: () => unawaited(_updateConversationLocked(history)),
-        onDelete: () => unawaited(_deleteConversation(history)),
-        onSwipeDelete: () => unawaited(_showDeleteConversationDialog(history)),
-        onLongPress: () => unawaited(_showConversationActionDialog(history)),
-        canDetach: operitSupportsDesktopMultiWindow,
-        onDetach: () => unawaited(
-          DetachedChatWindowLauncher.openChat(
-            chatId: history.id,
-            title: history.title,
-            themePreferenceSnapshot: OperitTheme.of(
-              context,
-            ).themePreferenceSnapshot,
-          ).catchError((Object error, StackTrace stackTrace) {
-            if (mounted) setState(() => _errorMessage = error.toString());
-          }),
+        themePreferenceSnapshot: OperitTheme.of(
+          context,
+        ).themePreferenceSnapshot,
+      ).catchError((Object error, StackTrace stackTrace) {
+        if (mounted) setState(() => _errorMessage = error.toString());
+      }),
+    ),
+    onMoveTo: (moved) =>
+        unawaited(_runGroupMutation(() => _moveConversationTo(moved, history))),
+    canAcceptDrop: (moved) =>
+        _workspaceKey(moved) == _workspaceKey(history) &&
+        moved.parentChatId == history.parentChatId,
+  );
+
+  /// Keeps child conversations beneath their parent until explicitly expanded or found by search.
+  Widget _historyBranch(
+    core_proxy.ChatHistoryListItem history,
+    bool searching, [
+    int depth = 0,
+  ]) {
+    final children = _historyTree.children[history.id]!;
+    final expanded = searching || _expandedParents.contains(history.id);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Padding(
+          padding: EdgeInsetsDirectional.only(start: depth * 16.0),
+          child: _historyRow(
+            history,
+            childrenToggle: children.isEmpty
+                ? null
+                : IconButton(
+                    key: ValueKey('workspace-children:${history.id}'),
+                    tooltip: expanded ? '收起子会话' : '展开子会话（${children.length}）',
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 26,
+                      height: 28,
+                    ),
+                    padding: EdgeInsets.zero,
+                    iconSize: 18,
+                    icon: Icon(
+                      expanded ? Icons.expand_less : Icons.expand_more,
+                    ),
+                    onPressed: () => setState(() {
+                      if (!_expandedParents.remove(history.id)) {
+                        _expandedParents.add(history.id);
+                      }
+                    }),
+                  ),
+          ),
         ),
-        onMoveTo: (moved) => unawaited(
-          _runGroupMutation(() => _moveConversationTo(moved, history)),
-        ),
-        canAcceptDrop: (moved) =>
-            _workspaceKey(moved) == _workspaceKey(history),
-      );
+        if (expanded)
+          for (final child in children)
+            if (!searching || _matchingHistoryIds.contains(child.id))
+              _historyBranch(child, searching, depth + 1),
+      ],
+    );
+  }
 
   Widget _sidebarHeader(Widget tabs) => Padding(
     padding: const EdgeInsets.only(top: 26, right: 12),
@@ -613,8 +674,9 @@ class _DrawerContentState extends State<DrawerContent> {
             expanded: !_collapsedGroups.contains(group.key),
             appearance: widget.appearance,
             onToggleExpanded: () => setState(() {
-              if (!_collapsedGroups.remove(group.key))
+              if (!_collapsedGroups.remove(group.key)) {
                 _collapsedGroups.add(group.key);
+              }
             }),
             onCreateChat: () => unawaited(
               _runGroupMutation(
@@ -646,7 +708,7 @@ class _DrawerContentState extends State<DrawerContent> {
                 in searching || _expandedWorkspaces.contains(group.key)
                     ? group.histories
                     : _groupPreview(group.histories))
-              _historyRow(chat),
+              _historyBranch(chat, searching),
             if (!searching &&
                 _groupPreview(group.histories).length < group.histories.length)
               _HistoryLimitButton(

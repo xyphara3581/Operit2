@@ -583,17 +583,7 @@ impl OperitApplication {
             {
                 continue;
             }
-            let scope = if record
-                .settings
-                .get("builtin")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true)
-                && record.settings.get("installationScope").is_none()
-            {
-                "builtin".to_string()
-            } else {
-                record.scope.clone()
-            };
+            let scope = record.scope.clone();
             if result.insert(record.id.clone(), scope.clone()).is_some() {
                 return Err(format!(
                     "Extension ownership conflict: {} exists in both locations",

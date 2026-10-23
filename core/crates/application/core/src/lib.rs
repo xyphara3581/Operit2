@@ -157,15 +157,17 @@ impl CoreApplication {
             .hostManager()
             .pluginSdkIpcHost
             .clone()
-            .map(|host| {
+            .map(|host| -> Result<OperitPluginSdkIpcBridge, String> {
+                let scheduler = localClient.hostManager().hostRuntimeTaskSchedulerHost.clone().ok_or("Plugin SDK IPC requires a Host task scheduler")?;
                 let target: Arc<dyn PluginSdkLinkTarget> = nodeRouter.clone();
-                OperitPluginSdkIpcBridge::new(
+                Ok(OperitPluginSdkIpcBridge::new(
                     host,
+                    scheduler,
                     PluginSdkIpcEndpoint::standard(),
                     target,
                     operit_proxy_local::pluginSdkSurface(),
-                )
-            });
+                ))
+            }).transpose()?;
         if let Some(bridge) = &pluginSdkIpcBridge {
             bridge.start().map_err(|error| error.to_string())?;
         }

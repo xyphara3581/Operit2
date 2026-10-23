@@ -94,15 +94,28 @@ class ChatInputSubmitDecision {
 }
 
 class ChatViewModel {
+  /// Creates a chat model whose selection and observations use the same runtime.
   ChatViewModel({
     this.bridge = const ProxyCoreRuntimeBridge(),
     GeneratedChatRuntimeHolderMainCoreProxy? chat,
   }) : clients = GeneratedCoreProxyClients(bridge),
-       _chat = chat ?? GeneratedCoreProxyClients(bridge).chatRuntimeHolderMain;
+       _chat = chat ?? GeneratedCoreProxyClients(bridge).chatRuntimeHolderMain {
+    _observationChat = _chat;
+  }
+
+  /// Keeps local selection separate from the runtime that owns live generation.
+  ChatViewModel.withChatObservation({
+    required this.bridge,
+    required GeneratedChatRuntimeHolderMainCoreProxy chat,
+    required GeneratedChatRuntimeHolderMainCoreProxy observationChat,
+  }) : clients = GeneratedCoreProxyClients(bridge),
+       _chat = chat,
+       _observationChat = observationChat;
 
   final OperitRuntimeBridge bridge;
   final GeneratedCoreProxyClients clients;
   final GeneratedChatRuntimeHolderMainCoreProxy _chat;
+  late final GeneratedChatRuntimeHolderMainCoreProxy _observationChat;
 
   /// The chat runtime scoped to this view model's window.
   GeneratedChatRuntimeHolderMainCoreProxy get chatCore => _chat;
@@ -126,12 +139,12 @@ class ChatViewModel {
 
   /// Watches messages for one explicit main-runtime chat id.
   Stream<List<ChatUiMessage>> watchMessages(String chatId) {
-    return _chat.chatMessagesFlow(chatId: chatId);
+    return _observationChat.chatMessagesFlow(chatId: chatId);
   }
 
   /// Watches runtime state for one explicit main-runtime chat id.
   Stream<core_proxy.ChatState> watchChatState(String chatId) {
-    return _chat.chatStateFlow(chatId: chatId);
+    return _observationChat.chatStateFlow(chatId: chatId);
   }
 
   /// Sends a decision for a permission request through the owning chat route.

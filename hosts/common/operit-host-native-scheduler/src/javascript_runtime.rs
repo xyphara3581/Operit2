@@ -22,13 +22,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 // Keep the engine limit below the reserved worker stack to leave room for Rust/Host calls.
-const JAVASCRIPT_STATE_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
 const JAVASCRIPT_STATE_ENGINE_STACK_BYTES: usize = 4 * 1024 * 1024;
-
-thread_local! {
-    /// Identifies threads whose stack reservation is controlled by this Host.
-    static IS_JAVASCRIPT_STATE_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
 
 enum NativeJavaScriptStateRequest {
     Enqueue {
@@ -81,7 +75,7 @@ impl NativeHostJavaScriptRuntime {
                 .map_err(|error| HostError::new(error.to_string()))?;
         // Only managed workers have the known 16 MiB reservation; caller-owned threads
         // retain QuickJS's default bound rather than assuming their available stack.
-        if IS_JAVASCRIPT_STATE_THREAD.get() {
+        if crate::runtime_task_scheduler::hasManagedWorkerStack() {
             runtime.set_max_stack_size(JAVASCRIPT_STATE_ENGINE_STACK_BYTES);
         }
         let context = Context::full(&runtime).map_err(|error| HostError::new(error.to_string()))?;
@@ -407,7 +401,8 @@ pub struct NativeHostJavaScriptRuntimeHost {
     bootstrap: Arc<HostJavaScriptBootstrap>,
     codeCache: Arc<HostJavaScriptCodeCache>,
     nextStateId: Arc<AtomicU64>,
-    stateWorkers: Arc<Mutex<BTreeMap<u64, mpsc::Sender<NativeJavaScriptStateRequest>>>>,
+    stateWorkers:
+        Arc<Mutex<BTreeMap<u64, tokio::sync::mpsc::UnboundedSender<NativeJavaScriptStateRequest>>>>,
 }
 
 impl NativeHostJavaScriptRuntimeHost {
@@ -420,7 +415,7 @@ impl NativeHostJavaScriptRuntimeHost {
     fn stateWorker(
         &self,
         handle: HostJavaScriptRuntimeStateHandle,
-    ) -> HostResult<mpsc::Sender<NativeJavaScriptStateRequest>> {
+    ) -> HostResult<tokio::sync::mpsc::UnboundedSender<NativeJavaScriptStateRequest>> {
         self.stateWorkers
             .lock()
             .expect("native JavaScript state registry mutex poisoned")
@@ -444,68 +439,63 @@ impl HostJavaScriptRuntimeHost for NativeHostJavaScriptRuntimeHost {
         )?))
     }
 
-    /// Creates one affine JavaScript state on a dedicated native thread.
+    /// Creates one affine JavaScript state on the shared Host engine executor.
     fn createHostJavaScriptRuntimeState(
         &self,
         taskName: &str,
+        kind: operit_host_api::HostJavaScriptRuntimeStateKind,
         factory: HostJavaScriptRuntimeStateFactory,
     ) -> HostResult<HostJavaScriptRuntimeStateHandle> {
         let stateId = self.nextStateId.fetch_add(1, Ordering::Relaxed) + 1;
-        let (requestSender, requestReceiver) = mpsc::channel::<NativeJavaScriptStateRequest>();
+        let (requestSender, mut requestReceiver) =
+            tokio::sync::mpsc::unbounded_channel::<NativeJavaScriptStateRequest>();
         let (createdSender, createdReceiver) = mpsc::channel::<HostResult<()>>();
-        std::thread::Builder::new()
-            .name(format!("{taskName}-{stateId}"))
-            .stack_size(JAVASCRIPT_STATE_THREAD_STACK_BYTES)
-            .spawn(move || {
-                IS_JAVASCRIPT_STATE_THREAD.set(true);
-                let mut state = match factory() {
-                    Ok(state) => {
-                        let _ = createdSender.send(Ok(()));
-                        state
-                    }
-                    Err(error) => {
-                        let _ = createdSender.send(Err(error));
-                        return;
-                    }
-                };
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("native JavaScript state executor must start");
-                for request in requestReceiver {
-                    match request {
-                        NativeJavaScriptStateRequest::Enqueue { task, interrupt } => {
-                            if let Err(error) = task(state.as_mut(), interrupt) {
-                                operit_host_api::logHostError(
-                                    "JavaScriptRuntime",
-                                    &error.to_string(),
-                                );
+        crate::NativeHostRuntimeTaskSchedulerHost::new().scheduleJavaScriptStateTask(
+            taskName,
+            kind,
+            Box::new(move || {
+                Box::pin(async move {
+                    let mut state = match factory() {
+                        Ok(state) => {
+                            let _ = createdSender.send(Ok(()));
+                            state
+                        }
+                        Err(error) => {
+                            let _ = createdSender.send(Err(error));
+                            return;
+                        }
+                    };
+                    while let Some(request) = requestReceiver.recv().await {
+                        match request {
+                            NativeJavaScriptStateRequest::Enqueue { task, interrupt } => {
+                                if let Err(error) = task(state.as_mut(), interrupt) {
+                                    operit_host_api::logHostError(
+                                        "JavaScriptRuntime",
+                                        &error.to_string(),
+                                    );
+                                }
                             }
+                            NativeJavaScriptStateRequest::Execute {
+                                task,
+                                interrupt,
+                                response,
+                            } => {
+                                let _ = response.send(task(state.as_mut(), interrupt));
+                            }
+                            NativeJavaScriptStateRequest::ExecuteAsync {
+                                task,
+                                interrupt,
+                                response,
+                            } => {
+                                let result = task(state.as_mut(), interrupt).await;
+                                let _ = response.send(result);
+                            }
+                            NativeJavaScriptStateRequest::Shutdown => break,
                         }
-                        NativeJavaScriptStateRequest::Execute {
-                            task,
-                            interrupt,
-                            response,
-                        } => {
-                            let _ = response.send(task(state.as_mut(), interrupt));
-                        }
-                        NativeJavaScriptStateRequest::ExecuteAsync {
-                            task,
-                            interrupt,
-                            response,
-                        } => {
-                            let result = runtime.block_on(task(state.as_mut(), interrupt));
-                            let _ = response.send(result);
-                        }
-                        NativeJavaScriptStateRequest::Shutdown => break,
                     }
-                }
-            })
-            .map_err(|error| {
-                HostError::new(format!(
-                    "create JavaScript runtime state thread {taskName} failed: {error}"
-                ))
-            })?;
+                })
+            }),
+        )?;
         createdReceiver.recv().map_err(|error| {
             HostError::new(format!(
                 "JavaScript runtime state creation disconnected: {error}"
@@ -522,11 +512,10 @@ impl HostJavaScriptRuntimeHost for NativeHostJavaScriptRuntimeHost {
     fn executeHostJavaScriptRuntimeStateTask(
         &self,
         handle: HostJavaScriptRuntimeStateHandle,
-        timeoutMillis: u64,
+        interrupt: HostJavaScriptExecutionInterrupt,
         task: HostJavaScriptRuntimeStateTask,
     ) -> HostResult<HostJavaScriptRuntimeStateOutput> {
         let worker = self.stateWorker(handle)?;
-        let interrupt = HostJavaScriptExecutionInterrupt::new(timeoutMillis)?;
         let (response, receiver) = mpsc::channel();
         worker
             .send(NativeJavaScriptStateRequest::Execute {
@@ -535,29 +524,19 @@ impl HostJavaScriptRuntimeHost for NativeHostJavaScriptRuntimeHost {
                 response,
             })
             .map_err(|error| HostError::new(error.to_string()))?;
-        match receiver.recv_timeout(Duration::from_millis(timeoutMillis)) {
-            Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                interrupt.interrupt();
-                Err(HostError::timeout(format!(
-                    "JavaScript runtime state task timed out after {timeoutMillis} milliseconds"
-                )))
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(HostError::new(
-                "JavaScript runtime state worker disconnected",
-            )),
-        }
+        receiver
+            .recv()
+            .map_err(|_| HostError::new("JavaScript runtime state worker disconnected"))?
     }
 
     /// Posts directly to the existing affine owner without a pool task or completion channel.
     fn enqueueHostJavaScriptRuntimeStateTask(
         &self,
         handle: HostJavaScriptRuntimeStateHandle,
-        timeoutMillis: u64,
+        interrupt: HostJavaScriptExecutionInterrupt,
         task: HostJavaScriptRuntimeStateTask,
     ) -> HostResult<()> {
         let worker = self.stateWorker(handle)?;
-        let interrupt = HostJavaScriptExecutionInterrupt::new(timeoutMillis)?;
         worker
             .send(NativeJavaScriptStateRequest::Enqueue { task, interrupt })
             .map_err(|error| HostError::new(error.to_string()))
@@ -567,13 +546,12 @@ impl HostJavaScriptRuntimeHost for NativeHostJavaScriptRuntimeHost {
     fn executeHostJavaScriptRuntimeStateAsyncTask(
         &self,
         handle: HostJavaScriptRuntimeStateHandle,
-        timeoutMillis: u64,
+        interrupt: HostJavaScriptExecutionInterrupt,
         task: HostJavaScriptRuntimeStateAsyncTask,
     ) -> HostJavaScriptRuntimeStateOutputFuture {
         let worker = self.stateWorker(handle);
         Box::pin(async move {
             let worker = worker?;
-            let interrupt = HostJavaScriptExecutionInterrupt::new(timeoutMillis)?;
             let (response, receiver) = tokio::sync::oneshot::channel();
             worker
                 .send(NativeJavaScriptStateRequest::ExecuteAsync {
@@ -995,7 +973,10 @@ mod bridge_tests {
                 }),
             )
             .unwrap();
-        runtime.evaluateHostJavaScriptVoid("test", r#"
+        runtime
+            .evaluateHostJavaScriptVoid(
+                "test",
+                r#"
             globalThis.results=[];
             globalThis.cancelledReason='';
             globalThis.cleaned=0;
@@ -1004,7 +985,9 @@ mod bridge_tests {
                 reason=>{cancelledReason=reason;},
             ).finally(()=>{cleaned++;});
             request('second',{i:8}).then(value=>results.push(value));
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         let requests = requests.lock().unwrap();
         assert_eq!(requests[0].1, vec![serde_json::json!({"i":7})]);
         assert_eq!(runtime.promises.borrow().len(), 2);

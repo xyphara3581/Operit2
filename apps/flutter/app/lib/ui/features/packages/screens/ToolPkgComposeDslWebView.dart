@@ -41,11 +41,13 @@ class ComposeDslWebViewHostContext {
     required this.executionContextKey,
     required this.dispatchAction,
     required this.runtimeOptionsProvider,
+    this.clients = const GeneratedCoreProxyClients(ProxyCoreRuntimeBridge()),
     this.onActionResultDelivered,
     this.readFileBytes,
   });
 
   /// Stable plugin package identity, not the transient execution/session key.
+  final GeneratedCoreProxyClients clients;
   final String packageName;
   final String routeInstanceId;
   final String executionContextKey;

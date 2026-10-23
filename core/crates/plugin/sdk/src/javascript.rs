@@ -590,7 +590,7 @@ impl ToolPkgExecutionContext {
 
 /// JavaScript execution handle supplied by the JS bridge crate.
 pub trait JsExecutionEngine: Send + Sync {
-    /// Executes a named JavaScript function for ToolPkg runtime hooks.
+    /// Executes a named JavaScript function without an automatic completion deadline.
     fn execute_script_function(
         &self,
         script: &str,
@@ -599,10 +599,9 @@ pub trait JsExecutionEngine: Send + Sync {
         env_overrides: &BTreeMap<String, String>,
         on_intermediate_result: Option<Arc<dyn Fn(String) + Send + Sync>>,
         dispatch_intermediate_on_main: bool,
-        timeout_sec: u64,
     ) -> JsExecutionCompletion<JsExecutionResult<Option<String>>>;
 
-    /// Executes a named JavaScript function with an exact millisecond timeout for ToolPkg runtime hooks.
+    /// Executes a before hook under its caller-owned millisecond completion deadline.
     fn execute_script_function_with_timeout_millis(
         &self,
         script: &str,
@@ -614,7 +613,7 @@ pub trait JsExecutionEngine: Send + Sync {
         timeout_millis: u64,
     ) -> JsExecutionCompletion<JsExecutionResult<Option<String>>>;
 
-    /// Executes a named JavaScript function without blocking the caller runtime.
+    /// Executes a named JavaScript function asynchronously without an automatic completion deadline.
     fn execute_script_function_async(
         &self,
         script: String,
@@ -623,15 +622,7 @@ pub trait JsExecutionEngine: Send + Sync {
         env_overrides: BTreeMap<String, String>,
         on_intermediate_result: Option<Arc<dyn Fn(String) + Send + Sync>>,
         dispatch_intermediate_on_main: bool,
-        timeout_millis: u64,
     ) -> JsExecutionFuture<JsExecutionResult<Option<String>>>;
-
-    /// Executes one stream step until completion or caller cancellation, with bounded CPU slices.
-    fn execute_script_function_until_cancelled(
-        &self, _script: String, _function_name: String, _params: BTreeMap<String, Value>, _env_overrides: BTreeMap<String, String>,
-    ) -> JsExecutionFuture<JsExecutionResult<Option<String>>> {
-        Box::pin(async { Err(crate::execution_result::JsExecutionError::invalid_request("This JavaScript engine does not support owner-scoped stream execution")) })
-    }
 
     /// Executes a ToolPkg registration function and returns captured declarations.
     fn execute_toolpkg_main_registration_function_with_text_resources(

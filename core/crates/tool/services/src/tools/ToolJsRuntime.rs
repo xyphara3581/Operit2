@@ -17,7 +17,6 @@ use operit_util::AppLogger::AppLogger;
 use operit_host_api::HostRuntimeTaskSchedulerHost;
 use serde_json::Value;
 
-const TOOLPKG_SCRIPT_TIMEOUT_SECONDS: u64 = 60;
 const TOOLPKG_IPC_DISPATCH_FUNCTION_NAME: &str = "__operit_toolpkg_runtime_dispatch__";
 const TOOLPKG_IPC_DISPATCH_FUNCTION_SOURCE: &str = r#"
 async function(params) {
@@ -448,11 +447,6 @@ async fn invokeToolPkgIpcMeasured(
         "__operit_inline_function_source".to_string(),
         Value::String(TOOLPKG_IPC_DISPATCH_FUNCTION_SOURCE.trim().to_string()),
     );
-    let persistent = channel == "$route"
-        && matches!(
-            request.payload.get("op").and_then(Value::as_str),
-            Some("next" | "pushItem" | "pushClose")
-        );
     params.insert(
         "__operit_toolpkg_ipc_channel".to_string(),
         Value::String(channel),
@@ -493,11 +487,14 @@ async fn invokeToolPkgIpcMeasured(
         }
     };
     timing.mark("paramsMs")?;
-    let execution = if persistent {
-        engine.execute_script_function_until_cancelled(script, functionName, params, BTreeMap::new())
-    } else {
-        engine.execute_script_function_async(script, functionName, params, BTreeMap::new(), None, true, TOOLPKG_SCRIPT_TIMEOUT_SECONDS * 1_000)
-    };
+    let execution = engine.execute_script_function_async(
+        script,
+        functionName,
+        params,
+        BTreeMap::new(),
+        None,
+        true,
+    );
     let result = execution.await;
     timing.mark("executeMs")?;
     let result = result.map_err(|error| error.to_string())?;

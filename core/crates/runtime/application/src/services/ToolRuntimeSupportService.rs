@@ -644,6 +644,7 @@ impl ToolRuntimeSupport for RuntimeToolSupport {
         &'a self,
         setAsCurrentChat: bool,
         sourceChatId: Option<String>,
+        parentChatId: Option<String>,
         input: Option<serde_json::Value>,
     ) -> ToolRuntimeSupportFuture<'a, Result<String, String>> {
         Box::pin(async move {
@@ -657,12 +658,12 @@ impl ToolRuntimeSupport for RuntimeToolSupport {
                         .ok_or_else(|| "Chat creation requires an initialized AI runtime".to_string())?;
                     (core.chatHistoryDelegate.clone_for_core(), service)
                 };
-                return history.createNewChat(&service, false, sourceChatId, input).await;
+                return history.createNewChat(&service, false, sourceChatId, parentChatId, input).await;
             }
             let mut holder = self.chatRuntimeHolder.lock().await;
             let chatId = holder
                 .getCore(ChatRuntimeSlot::MAIN)
-                .createNewChat(setAsCurrentChat, sourceChatId, input)
+                .createNewChat(setAsCurrentChat, sourceChatId, parentChatId, input)
                 .await?;
             holder.observeStats();
             Ok(chatId)

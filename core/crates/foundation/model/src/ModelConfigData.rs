@@ -384,6 +384,9 @@ impl ModelSummarySettings {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(non_snake_case)]
 pub struct LocalModelRuntimeSettings {
+    /// Opaque Binding selecting the device that owns the installed model weights.
+    #[serde(default)]
+    pub inferenceBindingKey: String,
     pub mnnForwardType: i32,
     pub mnnThreadCount: i32,
     pub llamaThreadCount: i32,
@@ -400,6 +403,7 @@ pub struct LocalModelRuntimeSettings {
 impl Default for LocalModelRuntimeSettings {
     fn default() -> Self {
         Self {
+            inferenceBindingKey: String::new(),
             mnnForwardType: 0,
             mnnThreadCount: 4,
             llamaThreadCount: 4,

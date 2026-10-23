@@ -137,9 +137,13 @@ impl AIToolHook for ToolLifecycleBridge {
         Box::pin(async move {
             let manager = RuntimePackageManager::readySnapshot(
                 self.runtime.tool_handler().getOrCreatePackageManager(),
-            ).await?;
-            ToolPkgToolLifecycleBridge::validateExecutionContext(&manager, executionContext.as_ref())?;
-            let budget = super::ToolPkgPreHookTimeout::ToolPkgPreHookTimeout::fromPreferences();
+            )
+            .await?;
+            ToolPkgToolLifecycleBridge::validateExecutionContext(
+                &manager,
+                executionContext.as_ref(),
+            )?;
+            let budget = super::ToolPkgPreHookTimeout::ToolPkgPreHookTimeout::fromPreferences()?;
             for container in manager.getEnabledToolPkgContainerRuntimes() {
                 let ownerContext = ToolPkgToolLifecycleBridge::executionContextForOwner(
                     &manager, executionContext.as_ref(), &container.packageName,
@@ -147,17 +151,11 @@ impl AIToolHook for ToolLifecycleBridge {
                 for hook in container.toolLifecycleHooks {
                     let mut payload = build_base_payload(tool);
                     payload["runtimeContext"] = ownerContext.clone();
-                    let timeoutMillis = budget.remainingTimeoutMillis().ok_or_else(|| format!(
-                        "Tool interception timed out before handler {}:{}", container.packageName, hook.id,
-                    ))?;
-                    let raw = manager.runToolPkgMainHookWithTimeoutMillis(
-                        &container.packageName, &hook.function, TOOLPKG_EVENT_TOOL_LIFECYCLE,
-                        Some("tool_call_intercept"), Some(&hook.id), hook.functionSource.as_deref(),
-                        payload, None, None, None, timeoutMillis,
+                    let raw = super::ToolPkgPreHookTimeout::ToolPkgPreHookTimeout::runHook(
+                        Some(&budget), &manager, &container.packageName, &hook.function,
+                        TOOLPKG_EVENT_TOOL_LIFECYCLE, "tool_call_intercept", &hook.id,
+                        hook.functionSource.as_deref(), payload,
                     ).await?;
-                    if budget.hasExpired() {
-                        return Err(format!("Tool interception timed out after handler {}:{}", container.packageName, hook.id));
-                    }
                     let decision = decode_intercept_result(raw)?;
                     if let AIToolHookDecision::Block(_) = decision {
                         return Ok(decision);
@@ -394,23 +392,20 @@ impl ToolPkgToolLifecycleBridge {
         }
         Self::validateExecutionContext(manager, Some(context))?;
         let originalDescriptors = available.clone();
-        let budget = super::ToolPkgPreHookTimeout::ToolPkgPreHookTimeout::fromPreferences();
+        let budget = super::ToolPkgPreHookTimeout::ToolPkgPreHookTimeout::fromPreferences()?;
         for container in manager.getEnabledToolPkgContainerRuntimes() {
-            let ownerContext = Self::executionContextForOwner(manager, Some(context), &container.packageName)?;
+            let ownerContext =
+                Self::executionContextForOwner(manager, Some(context), &container.packageName)?;
             for hook in container.toolPromptComposeHooks {
                 let payload = serde_json::json!({ "stage": "filter_tool_call_tools", "chatId": context.callerChatId, "availableTools": available, "metadata": { "executionContext": ownerContext } });
-                let timeoutMillis = budget.remainingTimeoutMillis().ok_or_else(|| format!(
-                    "Tool catalog policy timed out before handler {}:{}", container.packageName, hook.id,
-                ))?;
-                let raw = manager.runToolPkgMainHookWithTimeoutMillis(
-                    &container.packageName, &hook.function, TOOLPKG_EVENT_TOOL_PROMPT_COMPOSE,
-                    Some("filter_tool_call_tools"), Some(&hook.id), hook.functionSource.as_deref(),
-                    payload, None, None, None, timeoutMillis,
+                let raw = super::ToolPkgPreHookTimeout::ToolPkgPreHookTimeout::runHook(
+                    Some(&budget), manager, &container.packageName, &hook.function,
+                    TOOLPKG_EVENT_TOOL_PROMPT_COMPOSE, "filter_tool_call_tools", &hook.id,
+                    hook.functionSource.as_deref(), payload,
                 ).await?;
-                if budget.hasExpired() {
-                    return Err(format!("Tool catalog policy timed out after handler {}:{}", container.packageName, hook.id));
-                }
-                if let Some(mutation) = super::ToolPkgPromptHookBridge::decode_tool_prompt_policy_result(raw)? {
+                if let Some(mutation) =
+                    super::ToolPkgPromptHookBridge::decode_tool_prompt_policy_result(raw)?
+                {
                     if let Some(items) = mutation.available_tools {
                         let descriptors = items.into_iter().map(serde_json::to_value)
                             .collect::<Result<Vec<Value>, _>>().map_err(|error| error.to_string())?;

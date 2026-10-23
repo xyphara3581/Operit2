@@ -7,6 +7,19 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 const RUNTIME_WORKER_COUNT: usize = 16;
 const BLOCKING_WORKER_COUNT: usize = 16;
+const NETWORK_WORKER_COUNT: usize = 4;
+const SERVICE_WORKER_COUNT: usize = 16;
+const TASK_QUEUE_CAPACITY: usize = 4096;
+
+thread_local! {
+    static HOST_RUNTIME_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Identifies workers whose native stack reservation is owned by this scheduler.
+pub(crate) fn hasManagedWorkerStack() -> bool {
+    HOST_RUNTIME_WORKER.get()
+}
+
 const RUNTIME_WORKER_PREFIX: &str = "operit-runtime-worker";
 const BLOCKING_WORKER_PREFIX: &str = "operit-runtime-blocking-worker";
 
@@ -21,22 +34,99 @@ struct RuntimeTaskPool {
 }
 
 /// Shares ready tasks without assigning the receive wait to any single worker.
-struct RuntimeTaskQueue {
-    pending: Arc<Mutex<VecDeque<HostRuntimeAsyncTask>>>,
-    changed: tokio::sync::watch::Sender<()>,
+pub(crate) struct RuntimeTaskQueue {
+    pending: Arc<Mutex<TaskQueueState>>,
+    changed: Arc<tokio::sync::watch::Sender<()>>,
+}
+
+struct TaskQueueState {
+    pending: VecDeque<HostRuntimeAsyncTask>,
+    active: Vec<usize>,
+    polling: Vec<bool>,
+    cursor: usize,
+}
+
+struct TrackedTask {
+    future: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+    state: Arc<Mutex<TaskQueueState>>,
+    changed: std::sync::Weak<tokio::sync::watch::Sender<()>>,
+    worker: usize,
+}
+
+struct PollLease<'a> {
+    state: &'a Mutex<TaskQueueState>,
+    changed: &'a std::sync::Weak<tokio::sync::watch::Sender<()>>,
+    worker: usize,
+}
+
+impl Drop for PollLease<'_> {
+    /// Publishes worker availability even when a user future panics during its poll.
+    fn drop(&mut self) {
+        self.state
+            .lock()
+            .expect("runtime task queue mutex poisoned")
+            .polling[self.worker] = false;
+        if let Some(changed) = self.changed.upgrade() {
+            let _ = changed.send(());
+        }
+    }
+}
+
+impl std::future::Future for TrackedTask {
+    type Output = ();
+    /// Excludes a currently executing worker from assignments until its future yields.
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        let this = self.get_mut();
+        this.state
+            .lock()
+            .expect("runtime task queue mutex poisoned")
+            .polling[this.worker] = true;
+        let _poll = PollLease {
+            state: &this.state,
+            changed: &this.changed,
+            worker: this.worker,
+        };
+        if let Some(changed) = this.changed.upgrade() {
+            let _ = changed.send(());
+        }
+        this.future.as_mut().poll(cx)
+    }
+}
+
+impl Drop for TrackedTask {
+    /// Releases load accounting after success, cancellation, or a factory panic.
+    fn drop(&mut self) {
+        self.state
+            .lock()
+            .expect("runtime task queue mutex poisoned")
+            .active[self.worker] -= 1;
+        if let Some(changed) = self.changed.upgrade() {
+            let _ = changed.send(());
+        }
+    }
 }
 
 impl RuntimeTaskQueue {
     /// Wakes every dispatcher so a blocked worker cannot retain the only notification.
-    fn send(&self, task: HostRuntimeAsyncTask) -> Result<(), ()> {
+    pub(crate) fn send(&self, task: HostRuntimeAsyncTask) -> Result<(), ()> {
+        self.sendMany(vec![task])
+    }
+
+    /// Publishes an entire admitted pipeline under one queue lock.
+    fn sendMany(&self, tasks: Vec<HostRuntimeAsyncTask>) -> Result<(), ()> {
         let mut pending = self
             .pending
             .lock()
             .expect("runtime task queue mutex poisoned");
-        if self.changed.is_closed() {
+        if self.changed.is_closed()
+            || tasks.len() > TASK_QUEUE_CAPACITY.saturating_sub(pending.pending.len())
+        {
             return Err(());
         }
-        pending.push_back(task);
+        pending.pending.extend(tasks);
         drop(pending);
         self.changed.send(()).map_err(|_| ())
     }
@@ -44,19 +134,40 @@ impl RuntimeTaskQueue {
 
 /// Creates one shared task queue consumed by the requested number of affine workers.
 fn spawnTaskPool(prefix: &'static str, count: usize) -> Result<RuntimeTaskQueue, String> {
-    let pending = Arc::new(Mutex::new(VecDeque::<HostRuntimeAsyncTask>::new()));
+    spawnTaskPoolWithOptions(prefix, count, 16 * 1024 * 1024, true)
+}
+
+/// Creates bounded affine workers with the stack and I/O policy selected by the Host.
+pub(crate) fn spawnTaskPoolWithOptions(
+    prefix: &'static str,
+    count: usize,
+    stackSize: usize,
+    enableIo: bool,
+) -> Result<RuntimeTaskQueue, String> {
+    let pending = Arc::new(Mutex::new(TaskQueueState {
+        pending: VecDeque::new(),
+        active: vec![0; count],
+        polling: vec![false; count],
+        cursor: 0,
+    }));
     let (changed, updates) = tokio::sync::watch::channel(());
+    let changed = Arc::new(changed);
     for index in 0..count {
         let pending = pending.clone();
         let mut updates = updates.clone();
+        let changed = Arc::downgrade(&changed);
         let (ready, started) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new()
             .name(format!("{prefix}-{index}"))
+            .stack_size(stackSize)
             .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
+                HOST_RUNTIME_WORKER.set(stackSize >= 16 * 1024 * 1024);
+                let mut builder = tokio::runtime::Builder::new_current_thread();
+                builder.max_blocking_threads(1).enable_time();
+                if enableIo {
+                    builder.enable_io();
+                }
+                let runtime = match builder.build() {
                     Ok(runtime) => runtime,
                     Err(error) => {
                         let _ = ready.send(Err(error.to_string()));
@@ -72,20 +183,40 @@ fn spawnTaskPool(prefix: &'static str, count: usize) -> Result<RuntimeTaskQueue,
                         // Never hold the queue lock across an await: a local
                         // future may resume and block this thread while the
                         // dispatcher waits, stranding the entire shared queue.
-                        let task = pending
-                            .lock()
-                            .expect("runtime task queue mutex poisoned")
-                            .pop_front();
+                        let task = {
+                            let mut state =
+                                pending.lock().expect("runtime task queue mutex poisoned");
+                            let selected = (0..count)
+                                .map(|offset| (state.cursor + offset) % count)
+                                .filter(|worker| !state.polling[*worker])
+                                .min_by_key(|worker| state.active[*worker]);
+                            if selected == Some(index) {
+                                let task = state.pending.pop_front();
+                                if task.is_some() {
+                                    state.active[index] += 1;
+                                    state.cursor = (index + 1) % count;
+                                }
+                                task
+                            } else {
+                                None
+                            }
+                        };
                         let Some(task) = task else {
                             if updates.changed().await.is_err() {
                                 break;
                             }
                             continue;
                         };
-                        // A factory panic is confined to its task, not the worker.
-                        local.spawn_local(async move {
-                            task().await;
+                        // Both factory and future stay inside the LocalSet panic boundary.
+                        local.spawn_local(TrackedTask {
+                            future: Box::pin(async move { task().await }),
+                            state: pending.clone(),
+                            changed: changed.clone(),
+                            worker: index,
                         });
+                        if let Some(changed) = changed.upgrade() {
+                            let _ = changed.send(());
+                        }
                         // Let the LocalSet start the task and keep the receive
                         // handoff fair when many tasks arrive in one burst.
                         tokio::task::yield_now().await;
@@ -285,6 +416,161 @@ impl NativeHostRuntimeTaskSchedulerHost {
     }
 }
 
+impl NativeHostRuntimeTaskSchedulerHost {
+    /// Runs all native network futures on the same four affine Host workers.
+    pub fn scheduleNetworkAsyncTask(
+        &self,
+        name: &str,
+        task: HostRuntimeAsyncTask,
+    ) -> HostResult<()> {
+        static NETWORK: OnceLock<Result<RuntimeTaskQueue, String>> = OnceLock::new();
+        let queue = NETWORK
+            .get_or_init(|| spawnTaskPool("operit-network-worker", NETWORK_WORKER_COUNT))
+            .as_ref()
+            .map_err(|error| HostError::new(format!("create network task pool failed: {error}")))?;
+        queue
+            .send(task)
+            .map_err(|_| HostError::new(format!("network task queue is closed or full: {name}")))
+    }
+
+    /// Isolates Java owner callbacks from Rust callers synchronously waiting for their reply.
+    pub fn scheduleOwnerTask(&self, name: &str, task: HostRuntimeTask) -> HostResult<()> {
+        static OWNERS: OnceLock<Result<RuntimeTaskQueue, String>> = OnceLock::new();
+        let queue = OWNERS
+            .get_or_init(|| spawnTaskPool("operit-owner-worker", 8))
+            .as_ref()
+            .map_err(|error| HostError::new(format!("create owner task pool failed: {error}")))?;
+        queue
+            .send(Box::new(move || {
+                Box::pin(async move {
+                    task();
+                })
+            }))
+            .map_err(|_| HostError::new(format!("owner task queue is closed or full: {name}")))
+    }
+
+    /// Keeps synchronous source compilation independent of script workers waiting for its result.
+    pub fn scheduleJavaScriptStateTask(
+        &self,
+        name: &str,
+        kind: operit_host_api::HostJavaScriptRuntimeStateKind,
+        task: HostRuntimeAsyncTask,
+    ) -> HostResult<()> {
+        static ENGINES: OnceLock<Result<RuntimeTaskQueue, String>> = OnceLock::new();
+        static COMPILERS: OnceLock<Result<RuntimeTaskQueue, String>> = OnceLock::new();
+        let queue = match kind {
+            operit_host_api::HostJavaScriptRuntimeStateKind::Execution => {
+                ENGINES.get_or_init(|| spawnTaskPool("operit-javascript-worker", 4))
+            }
+            operit_host_api::HostJavaScriptRuntimeStateKind::Compilation => {
+                COMPILERS.get_or_init(|| spawnTaskPool("operit-javascript-compiler", 1))
+            }
+        }
+        .as_ref()
+        .map_err(|error| HostError::new(format!("create JavaScript task pool failed: {error}")))?;
+        queue
+            .send(task)
+            .map_err(|_| HostError::new(format!("JavaScript task queue is closed or full: {name}")))
+    }
+
+    /// Reserves bounded Host capacity for an OS API that must block for its service lifetime.
+    pub fn scheduleServiceTask(&self, name: &str, task: HostRuntimeTask) -> HostResult<()> {
+        self.scheduleServiceTasks(name, vec![task])
+    }
+
+    /// Reserves every worker needed by a blocking pipeline before starting any component.
+    pub fn scheduleServiceTasks(&self, name: &str, tasks: Vec<HostRuntimeTask>) -> HostResult<()> {
+        if tasks.is_empty() {
+            return Err(HostError::new("Host service group is empty"));
+        }
+        let count = u32::try_from(tasks.len())
+            .map_err(|_| HostError::new("Host service group exceeds capacity"))?;
+        static SERVICES: OnceLock<Result<RuntimeTaskQueue, String>> = OnceLock::new();
+        static CAPACITY: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+        let permit = Arc::new(
+            CAPACITY
+                .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(SERVICE_WORKER_COUNT)))
+                .clone()
+                .try_acquire_many_owned(count)
+                .map_err(|_| HostError::new(format!("Host service capacity exhausted: {name}")))?,
+        );
+        let queue = SERVICES
+            .get_or_init(|| spawnTaskPool("operit-service-worker", SERVICE_WORKER_COUNT))
+            .as_ref()
+            .map_err(|error| HostError::new(format!("create service task pool failed: {error}")))?;
+        let admitted = tasks
+            .into_iter()
+            .map(|task| {
+                let permit = permit.clone();
+                Box::new(
+                    move || -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
+                        Box::pin(async move {
+                            let _permit = permit;
+                            task();
+                        })
+                    },
+                ) as HostRuntimeAsyncTask
+            })
+            .collect();
+        queue
+            .sendMany(admitted)
+            .map_err(|_| HostError::new(format!("service task queue is closed or full: {name}")))?;
+        Ok(())
+    }
+
+    /// Executes platform-affine blocking calls on an isolated reusable Host worker.
+    pub fn runPlatformTask<T: Send + 'static>(
+        &self,
+        name: &str,
+        work: impl FnOnce() -> HostResult<T> + Send + 'static,
+    ) -> HostResult<T> {
+        static PLATFORM: OnceLock<Result<RuntimeTaskQueue, String>> = OnceLock::new();
+        let queue = PLATFORM
+            .get_or_init(|| spawnTaskPool("operit-platform-worker", 1))
+            .as_ref()
+            .map_err(|error| {
+                HostError::new(format!("create platform task pool failed: {error}"))
+            })?;
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        queue
+            .send(Box::new(move || {
+                Box::pin(async move {
+                    let _ = sender.send(work());
+                })
+            }))
+            .map_err(|_| {
+                HostError::new(format!("platform task queue is closed or full: {name}"))
+            })?;
+        receiver
+            .recv()
+            .map_err(|error| HostError::new(format!("platform task stopped: {error}")))?
+    }
+
+    /// Returns a synchronous Host result while network waits stay on the shared network executor.
+    pub fn runNetworkTask<T, F>(
+        &self,
+        name: &str,
+        factory: impl FnOnce() -> F + Send + 'static,
+    ) -> HostResult<T>
+    where
+        T: Send + 'static,
+        F: std::future::Future<Output = HostResult<T>> + 'static,
+    {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        self.scheduleNetworkAsyncTask(
+            name,
+            Box::new(move || {
+                Box::pin(async move {
+                    let _ = sender.send(factory().await);
+                })
+            }),
+        )?;
+        receiver
+            .recv()
+            .map_err(|error| HostError::new(format!("network task stopped: {error}")))?
+    }
+}
+
 impl HostRuntimeTaskSchedulerHost for NativeHostRuntimeTaskSchedulerHost {
     /// Reads the process-local monotonic clock used for native elapsed-time measurements.
     fn monotonicTimeMillis(&self) -> HostResult<u64> {
@@ -328,14 +614,14 @@ impl HostRuntimeTaskSchedulerHost for NativeHostRuntimeTaskSchedulerHost {
         self.scheduleHostRuntimeAsyncTask(taskName, task)
     }
 
-    /// Waits asynchronously and executes delayed work on the coordination pool.
+    /// Waits asynchronously and executes delayed work on the blocking pool.
     fn scheduleDelayedHostRuntimeTask(
         &self,
         taskName: &str,
         delayMs: u64,
         task: HostRuntimeTask,
     ) -> HostResult<()> {
-        self.scheduleHostRuntimeAsyncTask(
+        self.scheduleHostRuntimeBlockingAsyncTask(
             taskName,
             Box::new(move || {
                 Box::pin(async move {
@@ -599,7 +885,7 @@ mod pool_tests {
                         "pool-delayed",
                         1,
                         Box::new(move || {
-                            sender.send(("coordination", threadName())).unwrap();
+                            sender.send(("blocking", threadName())).unwrap();
                         }),
                     ),
                 }
@@ -724,6 +1010,197 @@ mod pool_tests {
         }
         for _ in 0..128 {
             done.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod javascript_dependency_tests {
+    use super::*;
+    use operit_host_api::HostJavaScriptRuntimeStateKind;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// Compiles source while every script worker synchronously waits for compilation capacity.
+    #[test]
+    fn compilation_progresses_with_all_execution_workers_waiting() {
+        let scheduler = NativeHostRuntimeTaskSchedulerHost::new();
+        let (ready, started) = mpsc::channel();
+        let (done, completed) = mpsc::channel();
+        let mut releases = Vec::new();
+        for _ in 0..4 {
+            let (release, released) = mpsc::channel();
+            releases.push(release);
+            let ready = ready.clone();
+            let done = done.clone();
+            scheduler
+                .scheduleJavaScriptStateTask(
+                    "waiting-script",
+                    HostJavaScriptRuntimeStateKind::Execution,
+                    Box::new(move || {
+                        Box::pin(async move {
+                            ready.send(()).unwrap();
+                            released.recv_timeout(Duration::from_secs(3)).unwrap();
+                            let (compiled, result) = mpsc::channel();
+                            scheduler
+                                .scheduleJavaScriptStateTask(
+                                    "source-compiler",
+                                    HostJavaScriptRuntimeStateKind::Compilation,
+                                    Box::new(move || {
+                                        Box::pin(async move {
+                                            compiled.send(()).unwrap();
+                                        })
+                                    }),
+                                )
+                                .unwrap();
+                            let result = result.recv_timeout(Duration::from_secs(3));
+                            done.send(result).unwrap();
+                        })
+                    }),
+                )
+                .unwrap();
+        }
+        for _ in 0..4 {
+            started.recv_timeout(Duration::from_secs(3)).unwrap();
+        }
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        for _ in 0..4 {
+            completed
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// Many independent network waits reuse at most the configured four workers.
+    #[test]
+    fn network_futures_share_four_workers() {
+        let scheduler = NativeHostRuntimeTaskSchedulerHost::new();
+        let (sender, receiver) = mpsc::channel();
+        let mut releases = Vec::new();
+        for _ in 0..128 {
+            let (release, wait) = tokio::sync::oneshot::channel();
+            releases.push(release);
+            let sender = sender.clone();
+            scheduler
+                .scheduleNetworkAsyncTask(
+                    "network-affinity",
+                    Box::new(move || {
+                        Box::pin(async move {
+                            let owner = std::thread::current().id();
+                            sender
+                                .send((owner, std::thread::current().name().unwrap().to_owned()))
+                                .unwrap();
+                            wait.await.unwrap();
+                            assert_eq!(owner, std::thread::current().id());
+                            sender
+                                .send((owner, std::thread::current().name().unwrap().to_owned()))
+                                .unwrap();
+                        })
+                    }),
+                )
+                .unwrap();
+        }
+        let owners = (0..128)
+            .map(|_| receiver.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(!owners.is_empty() && owners.len() <= NETWORK_WORKER_COUNT);
+        assert!(owners
+            .iter()
+            .all(|(_, name)| name.starts_with("operit-network-worker-")));
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        for _ in 0..128 {
+            assert!(owners.contains(&receiver.recv_timeout(Duration::from_secs(5)).unwrap()));
+        }
+    }
+
+    /// An oversized service group must fail before any of its jobs can start.
+    #[test]
+    fn service_group_reservation_is_atomic() {
+        let scheduler = NativeHostRuntimeTaskSchedulerHost::new();
+        let (sender, receiver) = mpsc::channel();
+        let too_many = (0..SERVICE_WORKER_COUNT + 1)
+            .map(|_| {
+                let sender = sender.clone();
+                Box::new(move || {
+                    sender.send(()).unwrap();
+                }) as HostRuntimeTask
+            })
+            .collect();
+        assert!(scheduler
+            .scheduleServiceTasks("oversized", too_many)
+            .is_err());
+        assert!(receiver.try_recv().is_err());
+        let mut releases = Vec::new();
+        let admitted = (0..SERVICE_WORKER_COUNT)
+            .map(|_| {
+                let sender = sender.clone();
+                let (release, wait) = mpsc::channel();
+                releases.push(release);
+                Box::new(move || {
+                    sender.send(()).unwrap();
+                    let _ = wait.recv_timeout(Duration::from_secs(5));
+                }) as HostRuntimeTask
+            })
+            .collect();
+        scheduler
+            .scheduleServiceTasks("complete-pipeline", admitted)
+            .unwrap();
+        for _ in 0..SERVICE_WORKER_COUNT {
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        let rejected = scheduler.scheduleServiceTask(
+            "over-capacity",
+            Box::new(|| panic!("rejected task started")),
+        );
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        assert!(rejected.is_err());
+    }
+
+    /// Releasing a non-global scheduler stops workers and drops their suspended futures.
+    #[test]
+    fn dropping_pool_releases_affine_tasks() {
+        struct Released(mpsc::Sender<()>);
+        impl Drop for Released {
+            /// Reports destruction of a worker-owned future.
+            fn drop(&mut self) {
+                self.0.send(()).unwrap();
+            }
+        }
+        let pool = spawnTaskPoolWithOptions("test-owned", 2, 2 * 1024 * 1024, false).unwrap();
+        let (started, ready) = mpsc::channel();
+        let (released, dropped) = mpsc::channel();
+        for _ in 0..2 {
+            let started = started.clone();
+            let released = released.clone();
+            pool.send(Box::new(move || {
+                Box::pin(async move {
+                    let _released = Released(released);
+                    started.send(()).unwrap();
+                    std::future::pending::<()>().await;
+                })
+            }))
+            .unwrap();
+        }
+        for _ in 0..2 {
+            ready.recv_timeout(Duration::from_secs(3)).unwrap();
+        }
+        drop(pool);
+        for _ in 0..2 {
+            dropped.recv_timeout(Duration::from_secs(3)).unwrap();
         }
     }
 }

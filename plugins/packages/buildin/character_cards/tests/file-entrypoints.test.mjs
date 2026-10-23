@@ -383,7 +383,7 @@ test("sidebar preparation supplies avatar paths without binary reads or opening 
   assert.equal(disk.calls.length, 0, "Registration must stay lazy");
   await assert.rejects(plugin.apis.get("chat.sidebar.prepare").function({ callerPackage: "other", payload: { chats: [] } }), /authenticated host/);
   const chats = [{ id: "prepared-chat", title: "提前加载", updatedAt: "1", displayOrder: 0,
-    workspaceId: null, workspaceName: null, locked: false, pinned: false, group: null }];
+    workspaceId: null, workspaceName: null, locked: false, pinned: false, group: null, parentChatId: null }];
   const result = plain(await plugin.api("chat.sidebar.prepare", { chats }));
   assert.equal(result.entries.length, 1);
   assert.equal(result.entries[0].entryId, "sidebar-characters");

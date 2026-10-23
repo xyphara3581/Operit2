@@ -489,6 +489,7 @@ pub trait ToolRuntimeSupport: Send + Sync {
         &'a self,
         setAsCurrentChat: bool,
         sourceChatId: Option<String>,
+        parentChatId: Option<String>,
         input: Option<serde_json::Value>,
     ) -> ToolRuntimeSupportFuture<'a, Result<String, String>>;
 

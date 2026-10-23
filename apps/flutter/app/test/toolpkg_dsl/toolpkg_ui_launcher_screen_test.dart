@@ -1136,6 +1136,77 @@ void main() {
     ]);
   });
 
+  testWidgets(
+    'retired renderer callbacks cannot enter a reloading or replacement session',
+    (tester) async {
+      final bridge = _ToolPkgDslTestBridge(
+        renderResult: (_) => _toggleRenderResult(false),
+      );
+      await tester.pumpWidget(_screen(bridge));
+      await tester.pumpAndSettle();
+      final retiredCallback = tester
+          .widget<Switch>(find.byType(Switch))
+          .onChanged!;
+      final release = Completer<void>();
+      bridge.releaseCompletion = release;
+      PluginHotReload.revision.value++;
+      retiredCallback(true);
+      await _pumpComposeReload(tester, settle: false);
+      expect(find.textContaining('Compose session reloading'), findsNothing);
+      expect(
+        bridge.calls.where((call) => call.methodName == 'action'),
+        isEmpty,
+      );
+      bridge.releaseCompletion = null;
+      release.complete();
+      await _pumpComposeReload(tester);
+      retiredCallback(true);
+      await tester.pumpAndSettle();
+      expect(
+        bridge.calls.where((call) => call.methodName == 'action'),
+        isEmpty,
+      );
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('reload runs root onLoad once for each new session', (
+    tester,
+  ) async {
+    final actions = <String>[];
+    final bridge = _ToolPkgDslTestBridge(
+      onAction: (args) => actions.add(args['actionId'] as String),
+      renderResult: (_) => jsonEncode({
+        'success': true,
+        'tree': _node(
+          'Text',
+          props: {
+            'text': 'Session content',
+            'onLoad': {'__actionId': 'load'},
+          },
+        ),
+      }),
+    );
+    await tester.pumpWidget(_screen(bridge));
+    await tester.pumpAndSettle();
+    expect(actions, ['load']);
+    for (var index = 0; index < 2; index++) {
+      PluginHotReload.revision.value++;
+      await _pumpComposeReload(tester);
+      expect(actions, List.filled(index + 2, 'load'));
+      await tester.pumpWidget(
+        _screen(bridge, initialState: {'version': index}),
+      );
+      await tester.pumpAndSettle();
+      expect(actions, List.filled(index + 2, 'load'));
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('Flutter reassemble opens a fresh usable Compose session', (
     tester,
   ) async {

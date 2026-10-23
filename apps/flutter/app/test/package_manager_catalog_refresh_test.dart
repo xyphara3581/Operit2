@@ -6,6 +6,7 @@ import 'package:operit2/ui/theme/OperitTheme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:operit2/core/bridge/OperitRuntimeBridge.dart';
+import 'package:operit2/core/host/AppToastController.dart';
 import 'package:operit2/core/link/CoreLinkCodec.dart';
 import 'package:operit2/core/link/CoreLinkProtocol.dart';
 import 'package:operit2/core/proxy/generated/CoreProxyClients.g.dart';
@@ -20,6 +21,106 @@ import 'package:operit2/ui/common/contributions/ChatSidebarTabHost.dart';
 
 /// Verifies installation notifications update an already mounted package list.
 void main() {
+  setUp(AppToastController.instance.reset);
+  tearDown(AppToastController.instance.reset);
+  for (final scope in ['device', 'space']) {
+    for (final isToolPkg in [true, false]) {
+      testWidgets(
+        'bundled source update stays in $scope (ToolPkg: $isToolPkg)',
+        (tester) async {
+          await tester.binding.setSurfaceSize(const Size(400, 900));
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+          final name = isToolPkg ? 'demo_toolpkg' : 'demo_script';
+          final bridge = _CatalogBridge()
+            ..installed = isToolPkg
+            ..enabled = true
+            ..scopes[name] = scope;
+          if (!isToolPkg) {
+            bridge.executablePackages[name] = _namedPackage(
+              name,
+              'Demo Script',
+            );
+          }
+          bridge.extraCandidates.add(
+            core_proxy.BundledExternalPackageCandidate.fromJson(
+              _extraCandidate(name).toJson()..['isToolPkg'] = isToolPkg,
+            ),
+          );
+          await tester.pumpWidget(_manager(bridge));
+          await tester.pumpAndSettle();
+          if (!isToolPkg) {
+            await tester.tap(
+              find.descendant(
+                of: find.byType(TabBar),
+                matching: find.text('包'),
+              ),
+            );
+            await tester.pumpAndSettle();
+          }
+          final update = find.byKey(ValueKey<String>('bundled-update:$name'));
+          expect(update, findsOneWidget);
+          expect(
+            find.byKey(
+              ValueKey<String>(
+                'bundled-${isToolPkg ? 'plugin' : 'package'}:$name',
+              ),
+            ),
+            findsNothing,
+          );
+          expect(find.text(scope == 'space' ? '设备空间' : '仅本设备'), findsOneWidget);
+          await tester.ensureVisible(update);
+          await tester.tap(update);
+          await tester.pumpAndSettle();
+          expect(bridge.imports, [name]);
+          expect(bridge.scopeChanges, isEmpty);
+          expect(bridge.scopes[name], scope);
+          expect(bridge.enabled, isTrue);
+          expect(update, findsNothing);
+          expect(find.text('选择安装范围'), findsNothing);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  for (final width in <double>[400, 1400]) {
+    testWidgets('plugin drag keeps its laid-out card width at $width', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(Size(width, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final bridge = _CatalogBridge()..installed = true;
+      for (var index = 1; index < 3; index++) {
+        final name = 'demo_$index';
+        bridge.installedContainers.add(
+          _pluginRuntime().toJson()..['packageName'] = name,
+        );
+        bridge.scopes[name] = 'device';
+      }
+      await tester.pumpWidget(_manager(bridge));
+      await tester.pumpAndSettle();
+      final card = find.byKey(const ValueKey<String>('plugin:demo_toolpkg'));
+      final cardWidth = tester.getSize(card).width;
+      final drag = tester.widget<LongPressDraggable<String>>(
+        find.ancestor(
+          of: card,
+          matching: find.byType(LongPressDraggable<String>),
+        ),
+      );
+      final gesture = await tester.startGesture(tester.getCenter(card));
+      await tester.pump(const Duration(milliseconds: 200));
+      await gesture.moveBy(const Offset(20, 20));
+      await tester.pump();
+      expect(
+        tester.getSize(find.byWidget(drag.feedback)).width,
+        closeTo(cardWidth, 0.01),
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets(
     'customized built-in displays its status and uninstalls through plugin details',
     (tester) async {
@@ -45,10 +146,48 @@ void main() {
       await tester.tap(find.text('Demo ToolPkg'));
       await tester.pumpAndSettle();
       expect(find.text('卸载自定义'), findsNothing);
-      expect(find.text('删除'), findsNothing);
+      expect(find.text('删除'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final scope in <String>['device', 'space']) {
+    testWidgets('bundled plugin uses its actual movable scope: $scope', (
+      tester,
+    ) async {
+      final bridge = _CatalogBridge()
+        ..installed = true
+        ..enabled = true
+        ..restoredBuiltin = true
+        ..scopes['demo_toolpkg'] = scope;
+      await tester.pumpWidget(_manager(bridge));
+      await tester.pumpAndSettle();
+      expect(find.text(scope == 'space' ? '设备空间' : '仅本设备'), findsOneWidget);
+      await tester.tap(find.byTooltip('展开'));
+      await tester.pumpAndSettle();
+      final target = scope == 'space' ? '仅本设备' : '设备空间';
+      await tester.tap(find.byTooltip('移至$target'));
+      await tester.pumpAndSettle();
+      expect(find.text('移至$target？'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, '移动'));
+      await tester.pumpAndSettle();
+      expect(bridge.scopeChanges.single['id'], 'demo_toolpkg');
+      expect(
+        bridge.scopeChanges.single['scope'],
+        scope == 'space' ? 'device' : 'space',
+      );
+      await tester.tap(find.text('Demo ToolPkg'));
+      await tester.pumpAndSettle();
+      expect(find.text('删除'), findsOneWidget);
+      await tester.tap(find.text('删除'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, '删除'));
+      await tester.pumpAndSettle();
+      expect(bridge.deletedPackages, ['demo_toolpkg']);
+      expect(find.text('Demo ToolPkg'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets('customized script retains its built-in row after uninstall', (
     tester,
@@ -80,7 +219,7 @@ void main() {
     await tester.tap(find.text('Demo Script'));
     await tester.pumpAndSettle();
     expect(find.text('卸载自定义'), findsNothing);
-    expect(find.text('删除'), findsNothing);
+    expect(find.text('删除'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -169,12 +308,14 @@ void main() {
     expect(bridge.mutations, isEmpty);
     expect(notifications, 0);
     expect(find.textContaining('Disable rejected'), findsOneWidget);
+    AppToastController.instance.reset();
     expect(tester.takeException(), isNull);
   });
 
   for (final name in <String>[
     'com.operit.plan_mode_bundle',
     'com.operit.goal_mode_bundle',
+    'com.operit.character_cards',
   ]) {
     for (final runtimeFallback in <bool>[false, true]) {
       testWidgets(
@@ -259,6 +400,7 @@ void main() {
         expect(bridge.deletedIssues.single.toJson(), issue.toJson());
         expect(find.text('Broken package'), findsNothing);
         expect(find.text('已删除，可重新添加'), findsOneWidget);
+        AppToastController.instance.reset();
         expect(tester.takeException(), isNull);
       },
     );
@@ -292,6 +434,7 @@ void main() {
     expect(bridge.deletedIssues.single.packageKind, 'package_manager');
     expect(find.text('插件导入记录'), findsNothing);
     expect(find.text('导入记录已删除'), findsOneWidget);
+    AppToastController.instance.reset();
     expect(tester.takeException(), isNull);
   });
 
@@ -451,6 +594,7 @@ void main() {
       expect(find.textContaining('Storage rejected deletion'), findsOneWidget);
       expect(find.text('Broken package'), findsOneWidget);
       expect(bridge.deletedIssues, isEmpty);
+      AppToastController.instance.reset();
       expect(tester.takeException(), isNull);
     },
   );
@@ -721,6 +865,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('更多操作'));
+    await tester.pumpAndSettle();
     final action = find.ancestor(
       of: find.byIcon(Icons.settings_outlined),
       matching: find.byType(FloatingActionButton),
@@ -850,14 +996,21 @@ class _CatalogBridge extends OperitRuntimeBridge {
       case 'deletePackage':
         final name = (request.args as Map)['packageName'] as String;
         deletedPackages.add(name);
-        customizedPackageNames.remove(name);
-        if (executablePackages[name]
-            case final core_proxy.ToolPackage package) {
-          executablePackages[name] = core_proxy.ToolPackage.fromJson(
-            package.toJson()..['is_built_in'] = true,
-          );
+        final customized = customizedPackageNames.remove(name);
+        if (customized) {
+          if (executablePackages[name]
+              case final core_proxy.ToolPackage package) {
+            executablePackages[name] = core_proxy.ToolPackage.fromJson(
+              package.toJson()..['is_built_in'] = true,
+            );
+          }
+          restoredBuiltin = true;
+        } else if (name == 'demo_toolpkg') {
+          installed = false;
+          enabled = false;
+        } else {
+          executablePackages.remove(name);
         }
-        restoredBuiltin = true;
         return true;
       case 'getExtensionScopes':
         return <String, Object?>{
@@ -932,6 +1085,10 @@ class _CatalogBridge extends OperitRuntimeBridge {
         return extraCandidates.map((candidate) => candidate.toJson()).toList();
       case 'getBundledExternalToolPkgContainerRuntimes':
         return extraRuntimes;
+      case 'importBundledExternalPackage':
+        imports.add((request.args as Map)['packageName'] as String);
+        extraCandidates.clear();
+        return 'Successfully imported package';
       case 'importBundledExternalToolPkgContainer':
         imports.add((request.args as Map)['containerPackageName'] as String);
         extraCandidates.clear();
@@ -941,7 +1098,11 @@ class _CatalogBridge extends OperitRuntimeBridge {
         scopeChanges.add((request.args as Map).cast<String, Object?>());
         return null;
       case 'getToolPkgContainerOrder':
-        return [];
+        return [
+          if (installed) 'demo_toolpkg',
+          for (final container in installedContainers)
+            container['packageName'] as String,
+        ];
     }
     throw StateError('Unexpected catalog call: ${request.methodName}');
   }

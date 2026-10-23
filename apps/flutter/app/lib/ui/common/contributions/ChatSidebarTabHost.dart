@@ -31,6 +31,7 @@ Map<String, Object?> chatSidebarSummary(core_proxy.ChatHistoryListItem chat) =>
       'locked': chat.locked,
       'pinned': chat.pinned,
       'group': chat.group,
+      'parentChatId': chat.parentChatId,
     };
 
 /// Returns a chat activation only for the exact generic discriminator and shape.

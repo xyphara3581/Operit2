@@ -616,6 +616,8 @@ class _PackageManagerScreenState extends State<PackageManagerScreen>
   Widget _buildPluginTab() {
     return PluginTabContent(
       plugins: _filteredPlugins,
+      bundledUpdates: _bundledUpdates,
+      onUpdatePlugin: _updateBundledExternalPackage,
       scopes: _scopes,
       customizedPackageNames: _customizedPackageNames,
       onMoveScope: _movePackageScope,
@@ -636,6 +638,8 @@ class _PackageManagerScreenState extends State<PackageManagerScreen>
   Widget _buildPackageTab() {
     return PackageTabContent(
       packages: _filteredPackages,
+      bundledUpdates: _bundledUpdates,
+      onUpdatePackage: _updateBundledExternalPackage,
       scopes: _scopes,
       customizedPackageNames: _customizedPackageNames,
       onMoveScope: _movePackageScope,
@@ -1067,11 +1071,24 @@ class _PackageManagerScreenState extends State<PackageManagerScreen>
     }
   }
 
+  /// Indexes bundled source updates owned by installed extensions.
+  Map<String, core_proxy.BundledExternalPackageCandidate> get _bundledUpdates =>
+      {
+        for (final candidate in _snapshot.bundledExternalCandidates)
+          if (_scopes.containsKey(candidate.packageName))
+            candidate.packageName: candidate,
+      };
+
+  /// Lists optional plugins that have no installed owner.
   List<core_proxy.BundledExternalPackageCandidate> get _filteredMorePlugins {
     final query = _searchQuery.trim().toLowerCase();
     final items =
         _snapshot.bundledExternalCandidates
-            .where((candidate) => candidate.isToolPkg)
+            .where(
+              (candidate) =>
+                  candidate.isToolPkg &&
+                  !_scopes.containsKey(candidate.packageName),
+            )
             .toList()
           ..sort(
             (left, right) => bundledExternalPackageDisplayName(
@@ -1092,11 +1109,16 @@ class _PackageManagerScreenState extends State<PackageManagerScreen>
         .toList(growable: false);
   }
 
+  /// Lists optional standalone packages that have no installed owner.
   List<core_proxy.BundledExternalPackageCandidate> get _filteredMorePackages {
     final query = _searchQuery.trim().toLowerCase();
     final items =
         _snapshot.bundledExternalCandidates
-            .where((candidate) => !candidate.isToolPkg)
+            .where(
+              (candidate) =>
+                  !candidate.isToolPkg &&
+                  !_scopes.containsKey(candidate.packageName),
+            )
             .toList()
           ..sort(
             (left, right) => bundledExternalPackageDisplayName(
@@ -1206,26 +1228,15 @@ class _PackageManagerScreenState extends State<PackageManagerScreen>
               _openPluginUi(plugin, initialRouteId: initialRouteId);
             }
           },
-          onDeletePackage: _canDeletePlugin(plugin)
-              ? () {
-                  Navigator.of(context).pop();
-                  if (mounted) {
-                    unawaited(_deletePlugin(plugin));
-                  }
-                }
-              : null,
+          onDeletePackage: () {
+            Navigator.of(context).pop();
+            if (mounted) {
+              unawaited(_deletePlugin(plugin));
+            }
+          },
         );
       },
     );
-  }
-
-  /// Returns whether the plugin source can be removed from package storage.
-  bool _canDeletePlugin(core_proxy.ToolPkgContainerRuntime plugin) {
-    return switch (plugin.sourceType) {
-      core_proxy.ToolPkgSourceType.asset => false,
-      core_proxy.ToolPkgSourceType.market ||
-      core_proxy.ToolPkgSourceType.externalValue => true,
-    };
   }
 
   /// Moves an installed package with its configuration and refreshes all rows.
@@ -1246,6 +1257,21 @@ class _PackageManagerScreenState extends State<PackageManagerScreen>
       ).showSnackBar(SnackBar(content: Text(error.toString())));
       await _loadSnapshot();
     }
+  }
+
+  /// Replaces an installed bundled source while retaining its scope and settings.
+  Future<void> _updateBundledExternalPackage(
+    core_proxy.BundledExternalPackageCandidate candidate,
+  ) async {
+    await _runAddAction(
+      () => candidate.isToolPkg
+          ? _packageManager.importBundledExternalToolPkgContainer(
+              containerPackageName: candidate.packageName,
+            )
+          : _packageManager.importBundledExternalPackage(
+              packageName: candidate.packageName,
+            ),
+    );
   }
 
   /// Imports one bundled external ToolPkg container from runtime assets.

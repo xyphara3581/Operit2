@@ -546,15 +546,14 @@ class PackageDetailsDialog extends StatelessWidget {
         ),
       ),
       actions: <Widget>[
-        if (!package.isBuiltIn)
-          OutlinedButton.icon(
-            onPressed: onDeletePackage,
-            icon: const Icon(Icons.delete_outline),
-            label: Text(isCustomized ? '卸载自定义' : '删除'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Theme.of(context).colorScheme.error,
-            ),
+        OutlinedButton.icon(
+          onPressed: onDeletePackage,
+          icon: const Icon(Icons.delete_outline),
+          label: Text(isCustomized ? '卸载自定义' : '删除'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: Theme.of(context).colorScheme.error,
           ),
+        ),
       ],
     );
   }

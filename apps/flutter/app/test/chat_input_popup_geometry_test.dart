@@ -13,12 +13,129 @@ import 'package:operit2/ui/common/components/RetainedPage.dart';
 import 'package:operit2/ui/features/chat/components/style/input/agent/AgentChatInputSection.dart';
 import 'package:operit2/ui/features/chat/components/style/input/agent/AgentModelSelectorPopup.dart';
 import 'package:operit2/ui/features/chat/components/style/input/classic/ClassicChatInputSection.dart';
+import 'package:operit2/ui/features/chat/components/style/input/common/ChatComposerSlotHost.dart';
+import 'package:operit2/ui/features/chat/components/style/input/common/ChatPendingMessageQueuePanel.dart';
 import 'package:operit2/ui/features/chat/viewmodel/ChatViewModel.dart';
 import 'package:operit2/ui/theme/OperitTheme.dart';
 
 /// Verifies real composer popups against root and constrained page overlays.
 void main() {
   setUp(ClientLogger.initialize);
+  for (final agent in [false, true]) {
+    for (final floating in [false, true]) {
+      testWidgets(
+        '${agent ? 'agent' : 'classic'} queue uses input edges above the bubble (floating: $floating)',
+        (tester) async {
+          final controller = TextEditingController();
+          final focus = FocusNode();
+          addTearDown(controller.dispose);
+          addTearDown(focus.dispose);
+          await tester.pumpWidget(
+            OperitTheme(
+              initialThemePreferenceSnapshot: ThemePreferenceSnapshot.fromJson({
+                ...UserPreferencesManager.defaultThemePreferenceSnapshot
+                    .toJson(),
+                'chatInputFloating': floating,
+                'transparentSurfaceEnabled': true,
+              }),
+              initialThemeIsReady: false,
+              unconfiguredChildEnabled: true,
+              hostInteractionHostsEnabled: false,
+              child: Scaffold(
+                body: _composer(
+                  agent: agent,
+                  controller: controller,
+                  focus: focus,
+                  viewModel: ChatViewModel(bridge: _PendingModelBridge()),
+                  mention: null,
+                  queue: const [
+                    PendingQueueMessageItem(id: 1, text: 'Queue alignment'),
+                  ],
+                ),
+              ),
+            ),
+          );
+          final queue = find.byType(ChatPendingMessageQueuePanel);
+          final bubble = find.byType(ThemeComposerCard);
+          final surface = find.byKey(
+            const ValueKey('chat.pending-queue.surface'),
+          );
+          final input = find.byKey(const ValueKey('chat.input.surface'));
+          expect(find.descendant(of: bubble, matching: queue), findsNothing);
+          expect(
+            tester.getRect(queue).bottom,
+            lessThanOrEqualTo(tester.getRect(bubble).top),
+          );
+          expect(
+            tester.getRect(surface).left,
+            closeTo(tester.getRect(input).left, 0.1),
+          );
+          expect(
+            tester.getRect(surface).right,
+            closeTo(tester.getRect(input).right, 0.1),
+          );
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+      );
+      testWidgets(
+        '${agent ? 'agent' : 'classic'} contributions sit above the input bubble (floating: $floating)',
+        (tester) async {
+          final controller = TextEditingController();
+          final focus = FocusNode();
+          addTearDown(controller.dispose);
+          addTearDown(focus.dispose);
+          await tester.pumpWidget(
+            OperitTheme(
+              initialThemePreferenceSnapshot: ThemePreferenceSnapshot.fromJson({
+                ...UserPreferencesManager.defaultThemePreferenceSnapshot
+                    .toJson(),
+                'chatInputFloating': floating,
+              }),
+              initialThemeIsReady: false,
+              unconfiguredChildEnabled: true,
+              hostInteractionHostsEnabled: false,
+              child: Scaffold(
+                body: _composer(
+                  agent: agent,
+                  controller: controller,
+                  focus: focus,
+                  viewModel: ChatViewModel(bridge: _PendingModelBridge()),
+                  mention: null,
+                  chatId: 'parent',
+                ),
+              ),
+            ),
+          );
+          await tester.pump();
+          final slot = find.byType(ChatComposerSlotHost);
+          final bubble = find.byType(ThemeComposerCard);
+          expect(slot, findsOneWidget);
+          expect(find.descendant(of: bubble, matching: slot), findsNothing);
+          expect(
+            tester.getRect(slot).bottom,
+            lessThanOrEqualTo(tester.getRect(bubble).top),
+          );
+          final slotContent = find.descendant(
+            of: slot,
+            matching: find.byType(FutureBuilder<List<ToolPkgChatComposerSlot>>),
+          );
+          final inputSurface = find.byKey(const ValueKey('chat.input.surface'));
+          expect(
+            tester.getRect(slotContent).left,
+            closeTo(tester.getRect(inputSurface).left, 0.1),
+          );
+          expect(
+            tester.getRect(slotContent).right,
+            closeTo(tester.getRect(inputSurface).right, 0.1),
+          );
+          expect(tester.getSize(slot).height, 0);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+      );
+    }
+  }
   for (final localOverlay in [false, true]) {
     for (final (agent, modelPopup) in [
       (true, true),
@@ -122,6 +239,8 @@ Widget _composer({
   required FocusNode focus,
   required ChatViewModel viewModel,
   required Widget? mention,
+  String? chatId,
+  List<PendingQueueMessageItem> queue = const [],
 }) => agent
     ? AgentChatInputSection(
         controller: controller,
@@ -130,7 +249,8 @@ Widget _composer({
         inputState: InputProcessingState.idle(),
         mentionSuggestionPanel: mention,
         viewModel: viewModel,
-        currentChatId: null,
+        currentChatId: chatId,
+        pendingQueueMessages: queue,
         onSendMessage: () {},
         onQueueMessage: () {},
         onCancelMessage: () {},
@@ -145,7 +265,8 @@ Widget _composer({
         inputState: InputProcessingState.idle(),
         mentionSuggestionPanel: mention,
         viewModel: viewModel,
-        currentChatId: null,
+        currentChatId: chatId,
+        pendingQueueMessages: queue,
         onSendMessage: () {},
         onQueueMessage: () {},
         onCancelMessage: () {},

@@ -891,7 +891,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsCategoryLocalModelsTitle => '本地模型';
 
   @override
-  String get settingsCategoryLocalModelsSubtitle => '下载、引擎、STT / TTS';
+  String get settingsCategoryLocalModelsSubtitle => 'LLM、下载、STT / TTS';
 
   @override
   String get settingsCategoryLocalModelsDescription => '管理按需安装的本地模型和推理引擎。';
@@ -4087,4 +4087,60 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get backgroundWorkStop => '停止';
+
+  @override
+  String get localModelsDeviceOnly => '保存在此设备';
+
+  @override
+  String get localModelsDeviceOnlyDescription =>
+      '模型权重、下载进度和安装记录仅保存在当前设备，不参与设备空间同步。聊天可通过路由使用安装了模型的设备。';
+
+  @override
+  String get localModelsRunChat => '推理与设置';
+
+  @override
+  String get localModelsUseForChat => '用于聊天';
+
+  @override
+  String get localModelsChatActivated => '已设为聊天模型';
+
+  @override
+  String get localModelsPrompt => '输入提示词';
+
+  @override
+  String get localModelsGenerate => '开始推理';
+
+  @override
+  String get localModelsGenerating => '正在推理…';
+
+  @override
+  String get localModelsThreads => 'CPU 线程数';
+
+  @override
+  String get localModelsContextSize => '上下文长度（token）';
+
+  @override
+  String get localModelsBatchSize => '批次大小';
+
+  @override
+  String get localModelsUnload => '释放模型内存';
+
+  @override
+  String get localModelsCpuBackend => '本机 CPU 推理';
+
+  @override
+  String get localModelsLlmDescription =>
+      '下载 GGUF 模型使用 llama.cpp，或下载 MNN 模型包。安装后可在这里试运行，或设为聊天模型。';
+
+  @override
+  String get localModelsInvalidSettings => '请检查线程数、上下文长度和批次大小。';
+
+  @override
+  String get localModelsFilterAll => '全部模型';
+
+  @override
+  String get localModelsFilterInstalled => '仅已安装';
+
+  @override
+  String get localModelsSearchCatalog => '搜索名称或推理引擎';
 }

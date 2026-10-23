@@ -153,14 +153,16 @@ function isCommandResult(value) {
     return "stdout" in value || "stderr" in value;
 }
 /** Builds the rejection result for an invalid one-message goal input. */
-function buildGoalInputValidationResult(objective) {
+function buildGoalInputValidationResult(objective, useEnglish) {
     if (!objective) {
-        return { action: "Block", message: "A task goal requires message text." };
+        return { action: "Block", message: useEnglish ? "A task goal requires message text." : "请填写任务目标。" };
     }
     if (objective.length > MAX_GOAL_OBJECTIVE_LENGTH) {
         return {
             action: "Block",
-            message: `Task goal exceeds ${MAX_GOAL_OBJECTIVE_LENGTH} characters.`,
+            message: useEnglish
+                ? `Task goal exceeds ${MAX_GOAL_OBJECTIVE_LENGTH} characters.`
+                : `任务目标不能超过 ${MAX_GOAL_OBJECTIVE_LENGTH} 个字符。`,
         };
     }
     return null;
@@ -254,8 +256,10 @@ async function onInputMenuToggle(event) {
             toggles: [
                 {
                     id: GOAL_INPUT_SLOT_TOGGLE_ID,
-                    title: "Task goal",
-                    description: "Use the next message as this chat's task goal.",
+                    title: payload.useEnglish === true ? "Task goal" : "任务目标",
+                    description: payload.useEnglish === true
+                        ? "Use the next message as this chat's task goal."
+                        : "将下一条消息作为当前聊天的任务目标。",
                     icon: Icons.Assignment,
                     isChecked: enabled,
                     slot: "general",
@@ -279,7 +283,7 @@ async function onChatInput(event) {
     }
     const objective = (payload.text ?? "").trim();
     if (event.eventName === "submit_requested") {
-        const validation = buildGoalInputValidationResult(objective);
+        const validation = buildGoalInputValidationResult(objective, payload.useEnglish === true);
         if (validation) {
             return validation;
         }

@@ -568,7 +568,7 @@ fn assembleRuntimeBootstrapScript() -> String {
         }}
 
         /** Invokes a registered source without transferring or fingerprinting its text again. */
-        function __operitExecuteScriptFunction(callId, params, sourceId, targetFunctionName, timeoutSec, preTimeoutMs, structuredResult) {{
+        function __operitExecuteScriptFunction(callId, params, sourceId, targetFunctionName, structuredResult) {{
             var scriptText = __operitScriptSources.get(sourceId);
             if (typeof scriptText !== 'string') {{
                 throw new Error('Unknown registered script source: ' + sourceId);
@@ -592,22 +592,12 @@ fn assembleRuntimeBootstrapScript() -> String {
                     ? globalThis.__operitGetCallState(callId)
                     : null;
             }}
+            /** Restores the surviving context and retires this call after its owned work ends. */
             function finalizeCall() {{
                 if (globalThis.__operitCurrentCallId === callId) {{
-                    // Prefer the surrounding session, but never leave a suspended call without
-                    // an owner when the surrounding call already finished: other calls may still
-                    // be awaiting host work and must keep a live execution id.
-                    globalThis.__operitCurrentCallId =
-                        typeof globalThis.__operitRestoreLiveCallId === 'function'
-                            ? globalThis.__operitRestoreLiveCallId(previousCallId, callId)
-                            : '';
-                }}
-                if (globalThis.__operit_call_runtime_ref === callRuntime) {{
-                    if (previousCallRuntime && typeof previousCallRuntime === 'object') {{
-                        globalThis.__operit_call_runtime_ref = previousCallRuntime;
-                    }} else {{
-                        delete globalThis.__operit_call_runtime_ref;
-                    }}
+                    globalThis.__operitRestoreCallContext(
+                        globalThis.__operitRestoreLiveCallId(previousCallId, callId)
+                    );
                 }}
                 if (callState.pendingReferences > 0) {{
                     callState.detached = true;
@@ -761,6 +751,13 @@ fn assembleRuntimeBootstrapScript() -> String {
                 update: emitIntermediate,
                 sendIntermediateResult: emitIntermediate,
                 /** Publishes each retained commit immediately on its own command's structured channel. */
+                /** Registers a subscription cleanup for the exact originating call session. */
+                onCleanup: function(cleanup) {{
+                    if (typeof cleanup !== 'function') {{ throw new TypeError('Call cleanup must be a function'); }}
+                    callState.cleanupCallbacks.add(cleanup);
+                    /** Releases a disposed subscription before its call finishes. */
+                    return function() {{ callState.cleanupCallbacks.delete(cleanup); }};
+                }},
                 sendComposeResponse: function(phase, response) {{
                     if (!isActive()) {{ throw new Error('Compose response owner is no longer active'); }}
                     __operitNativeSendStructuredIntermediate(callId, {{

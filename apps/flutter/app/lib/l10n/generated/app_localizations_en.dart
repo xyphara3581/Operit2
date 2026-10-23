@@ -915,7 +915,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsCategoryLocalModelsSubtitle =>
-      'Downloads, engines, STT / TTS';
+      'LLMs, downloads, STT / TTS';
 
   @override
   String get settingsCategoryLocalModelsDescription =>
@@ -4258,4 +4258,61 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get backgroundWorkStop => 'Stop';
+
+  @override
+  String get localModelsDeviceOnly => 'Stored on this device';
+
+  @override
+  String get localModelsDeviceOnlyDescription =>
+      'Weights, download progress and installation records stay on this device and are excluded from Space sync. Chats can route inference to the device with the model.';
+
+  @override
+  String get localModelsRunChat => 'Run and configure';
+
+  @override
+  String get localModelsUseForChat => 'Use for chat';
+
+  @override
+  String get localModelsChatActivated => 'Selected as the chat model';
+
+  @override
+  String get localModelsPrompt => 'Enter a prompt';
+
+  @override
+  String get localModelsGenerate => 'Generate';
+
+  @override
+  String get localModelsGenerating => 'Generating…';
+
+  @override
+  String get localModelsThreads => 'CPU threads';
+
+  @override
+  String get localModelsContextSize => 'Context size (tokens)';
+
+  @override
+  String get localModelsBatchSize => 'Batch size';
+
+  @override
+  String get localModelsUnload => 'Unload model';
+
+  @override
+  String get localModelsCpuBackend => 'On-device CPU inference';
+
+  @override
+  String get localModelsLlmDescription =>
+      'Download a GGUF model for llama.cpp or an MNN model bundle. After installation, try it here or select it for chat.';
+
+  @override
+  String get localModelsInvalidSettings =>
+      'Check the thread count, context size and batch size.';
+
+  @override
+  String get localModelsFilterAll => 'All models';
+
+  @override
+  String get localModelsFilterInstalled => 'Installed only';
+
+  @override
+  String get localModelsSearchCatalog => 'Search by name or inference engine';
 }

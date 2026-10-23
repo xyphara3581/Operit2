@@ -111,7 +111,7 @@ async fn native_character_editor_webview_actions_preserve_session_revision_order
         });
         return true;
     };"#;
-    engine.execute_script_function(setup, "install", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap();
+    engine.execute_script_function(setup, "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
     let script = source;
     let render_started = std::time::Instant::now();
     session.execute(command("render", Some(script), None, None)).await;
@@ -126,7 +126,7 @@ async fn native_character_editor_webview_actions_preserve_session_revision_order
     events.extend(drain(&mut stream));
     let methods = engine.execute_script_function(
         "exports.inspect = function() { return globalThis.characterControllerCommand.payload.object; };",
-        "inspect", &options(), &BTreeMap::new(), None, false, 60, None,
+        "inspect", &options(), &BTreeMap::new(), None, false, None,
     ).await.unwrap().unwrap();
     let methods: Value = serde_json::from_str(&methods).unwrap();
     let mut tasks = Vec::new();
@@ -243,7 +243,7 @@ async fn native_package_source_hash_performance_probe() {
         };
         return true;
     };"#;
-    engine.execute_script_function(install, "install", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap();
+    engine.execute_script_function(install, "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
     let main_bytes = std::fs::metadata(root.join("plugins/packages/buildin/character_cards/dist/main.js")).unwrap().len() as usize;
     for bytes in [1024, main_bytes] {
@@ -255,7 +255,7 @@ async fn native_package_source_hash_performance_probe() {
         let source = format!("{}{}", body, " ".repeat(bytes - body.len()));
         for sample in 0..6 {
             let started = std::time::Instant::now();
-            let result = engine.execute_script_function(&source, "probe", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap().unwrap();
+            let result = engine.execute_script_function(&source, "probe", &options(), &BTreeMap::new(), None, false, None).await.unwrap().unwrap();
             eprintln!("package_source_probe bytes={bytes} sample={sample} totalMs={:.3} details={result}", started.elapsed().as_secs_f64() * 1000.0);
         }
     }
@@ -276,13 +276,13 @@ async fn native_source_fingerprint_preserves_utf16_cache_identity_and_source_cha
             return globalThis.__operitHashText(value) === (expected >>> 0).toString(16);
         });
     };"#;
-    let result = engine.execute_script_function(source, "check", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap().unwrap();
+    let result = engine.execute_script_function(source, "check", &options(), &BTreeMap::new(), None, false, None).await.unwrap().unwrap();
     assert_eq!(serde_json::from_str::<Value>(&result).unwrap(), serde_json::json!([true, true, true, true, true]));
     let first = "exports.value = function() { return 'first'; };";
     let second = "exports.value = function() { return 'other'; };";
     assert_eq!(first.len(), second.len());
     for (script, expected) in [(first, "first"), (second, "other"), (first, "first")] {
-        let result = engine.execute_script_function(script, "value", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap().unwrap();
+        let result = engine.execute_script_function(script, "value", &options(), &BTreeMap::new(), None, false, None).await.unwrap().unwrap();
         assert_eq!(serde_json::from_str::<Value>(&result).unwrap(), Value::String(expected.into()));
     }
     session.close(); engine.destroy();
@@ -297,7 +297,7 @@ async fn native_compose_artifact_loads_without_parser_and_invalidates_changed_so
         if (typeof __operitAcorn !== 'undefined' || typeof OperitComposeCompiler !== 'undefined') throw Error('Page must not own the compiler');
         return true;
     };"#;
-    engine.execute_script_function(install, "install", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap();
+    engine.execute_script_function(install, "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
     let source = std::fs::read_to_string(root.join("plugins/packages/buildin/character_cards/dist/ui/main/index.ui.js")).unwrap();
     assert!(source.starts_with("// @operit-compose-artifact 2\n"));
@@ -396,9 +396,9 @@ async fn native_character_editor_load_stage_performance_probe() {
             let bootstrap_ms = bootstrap.elapsed().as_secs_f64() * 1000.0;
             let mut stream = session.updates().unwrap();
             if let Some(baseline_install) = &baseline_install {
-                engine.execute_script_function(baseline_install, "install", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap();
+                engine.execute_script_function(baseline_install, "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
             }
-            engine.execute_script_function(install, "install", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap();
+            engine.execute_script_function(install, "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
             let render_start = std::time::Instant::now();
             let mut initial = command("render", Some(source.clone()), None, None);
             initial.runtimeOptions.insert("state".into(), state.clone());
@@ -408,7 +408,7 @@ async fn native_character_editor_load_stage_performance_probe() {
             assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
             assert!(events.iter().any(|event| event.phase == "final" && event.update.is_some()));
             let node_count: usize = events.iter().filter_map(|event| event.update.as_ref()).map(|update| update.upserts.len()).sum();
-            let result = engine.execute_script_function(inspect, "inspect", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap().unwrap();
+            let result = engine.execute_script_function(inspect, "inspect", &options(), &BTreeMap::new(), None, false, None).await.unwrap().unwrap();
             let stages: Value = serde_json::from_str(&result).unwrap();
             let mut warm = Vec::new();
             for refresh_sample in 0..10 {
@@ -420,7 +420,7 @@ async fn native_character_editor_load_stage_performance_probe() {
                 warm.push(started.elapsed().as_secs_f64() * 1000.0);
                 assert!(drain(&mut stream).iter().all(|event| event.error.is_none()));
             }
-            let result = engine.execute_script_function(inspect, "inspect", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap().unwrap();
+            let result = engine.execute_script_function(inspect, "inspect", &options(), &BTreeMap::new(), None, false, None).await.unwrap().unwrap();
             let after: Value = serde_json::from_str(&result).unwrap();
             assert_eq!(after["prepareCalls"], Value::from(if precompiled { 0 } else { 1 }));
             samples.push(serde_json::json!({"sample":sample,"engineBootstrapMs":bootstrap_ms,"scriptToCommitMs":render_ms,
@@ -455,7 +455,7 @@ async fn native_character_sidebar_reorder_keeps_every_retained_reference_mounted
         });
         return true;
     };"#;
-    engine.execute_script_function(setup, "install", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap();
+    engine.execute_script_function(setup, "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
     let source = plugin;
     let chats: Vec<Value> = (1..=3).map(|index| serde_json::json!({
         "id":format!("c{index}"), "title":format!("Chat {index}"), "updatedAt":"1791059541109",
@@ -570,7 +570,7 @@ async fn native_lazy_window_overlap_performance_probe() {
         for is_baseline in variants {
             let (session, engine) = native_session();
             if is_baseline {
-                engine.execute_script_function(baseline.as_ref().unwrap(), "install", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap();
+                engine.execute_script_function(baseline.as_ref().unwrap(), "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
             }
             let mut stream = session.updates().unwrap();
             let started = std::time::Instant::now();
@@ -600,7 +600,7 @@ async fn native_lazy_window_overlap_performance_probe() {
                 events.extend(changed);
             }
             let inspect = "exports.inspect = function() { return globalThis.builderRuns; };";
-            let builder_runs: usize = engine.execute_script_function(inspect, "inspect", &options(), &BTreeMap::new(), None, false, 60, None)
+            let builder_runs: usize = engine.execute_script_function(inspect, "inspect", &options(), &BTreeMap::new(), None, false, None)
                 .await.unwrap().unwrap().parse().unwrap();
             assert_eq!(builder_runs, if is_baseline { 24 * 21 } else { 24 + 2 * 20 });
             let started = std::time::Instant::now();
@@ -652,7 +652,7 @@ async fn native_character_sidebar_window_performance_probe() {
         for is_baseline in variants {
             let (session, engine) = native_session();
             if is_baseline {
-                engine.execute_script_function(baseline.as_ref().unwrap(), "install", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap();
+                engine.execute_script_function(baseline.as_ref().unwrap(), "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
             }
             let mut stream = session.updates().unwrap();
             let mut initial = command("initial", Some(if is_baseline { baseline_source.clone() } else { source.clone() }), None, None);
@@ -665,7 +665,7 @@ async fn native_character_sidebar_window_performance_probe() {
             let mut store = ToolPkgComposeDslNodeStore::default();
             for event in &events { if let Some(update) = &event.update { store.apply(update.clone()).unwrap(); } }
             let inspect = "exports.inspect = function() { const b = globalThis.__operit_compose_bundle; const c = b.memoStore['native-sidebar-current'].current; return b.stateStore['native-sidebar-state'].context === JSON.stringify({input:c.input,chats:c.chatSidebar.chats}); };";
-            assert_eq!(engine.execute_script_function(inspect, "inspect", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap().unwrap(), "true",
+            assert_eq!(engine.execute_script_function(inspect, "inspect", &options(), &BTreeMap::new(), None, false, None).await.unwrap().unwrap(), "true",
                 "prepared catalog must match the validated input, without fallback reconciliation");
             let list = store.root().unwrap();
             assert_eq!(list.props["viewport"]["itemCount"], Value::from(103), "the fixture must contain an expanded catalog");
@@ -796,7 +796,7 @@ async fn native_character_avatar_picker_keeps_all_retained_revisions() {
         };
         return true;
     };"#;
-    engine.execute_script_function(setup, "install", &options(), &BTreeMap::new(), None, false, 60, None).await.unwrap();
+    engine.execute_script_function(setup, "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
     session.execute(command("render", Some(source), None, None)).await;
     let mut events = drain(&mut stream);
     assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
@@ -806,7 +806,7 @@ async fn native_character_avatar_picker_keeps_all_retained_revisions() {
     events.extend(drain(&mut stream));
     let methods = engine.execute_script_function(
         "exports.inspect = function() { return globalThis.avatarControllerMethods; };",
-        "inspect", &options(), &BTreeMap::new(), None, false, 60, None,
+        "inspect", &options(), &BTreeMap::new(), None, false, None,
     ).await.unwrap().unwrap();
     let methods: Value = serde_json::from_str(&methods).unwrap();
     let open = methods["openEntity"]["__actionId"].as_str().expect("management must register its native editor action");
@@ -831,5 +831,38 @@ async fn native_character_avatar_picker_keeps_all_retained_revisions() {
     for event in events { if let Some(update) = event.update { store.apply(update).unwrap(); } }
     let snapshot = store.snapshot().unwrap();
     assert!(snapshot.upserts.iter().any(|node| node.props.get("key").and_then(Value::as_str) == Some("entity-edit-avatar") && node.props.get("uri").and_then(Value::as_str).is_some_and(|uri| uri.starts_with("/app/character-config/avatars/"))), "avatar selection must finish");
+    session.close(); engine.destroy();
+}
+
+/// Publishes an initial effect's state after render completion without a UI action or input refresh.
+#[tokio::test(flavor = "current_thread")]
+async fn native_initial_effect_publishes_after_render_completion() {
+    let (session, engine) = native_session();
+    let mut stream = session.updates().unwrap();
+    let source = r#"exports.default = function(ctx) {
+        const [count, setCount] = ctx.useState('count', 0);
+        ctx.useEffect('initial-watch', function() {
+            const timer = setInterval(function() { setCount(1); clearInterval(timer); }, 50);
+            return function() { clearInterval(timer); };
+        }, []);
+        return ctx.UI.Text({text: String(count)});
+    };"#;
+    session.execute(command("initial-owner", Some(source.into()), None, None)).await;
+    let mut events = drain(&mut stream);
+    assert!(events.iter().any(|event| event.phase == "complete"));
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let event = stream.receiver.recv().await.expect("the initial effect must keep the session observable");
+            assert!(event.error.is_none(), "{event:?}");
+            let changed = event.update.as_ref().is_some_and(|update| update.upserts.iter().any(|node| node.props.get("text") == Some(&Value::String("1".into()))));
+            if changed {
+                assert_eq!(event.requestId, "initial-owner");
+                assert_eq!(event.phase, "intermediate");
+            }
+            events.push(event);
+            if changed { break; }
+        }
+    }).await.expect("an effect state update must stream without a click");
+    assert_revisions(&events);
     session.close(); engine.destroy();
 }

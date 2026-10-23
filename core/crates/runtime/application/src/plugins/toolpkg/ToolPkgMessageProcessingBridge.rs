@@ -32,7 +32,7 @@ impl ToolPkgMessageProcessingBridge {
     /// Synchronizes this bridge from the committed active package catalog.
     #[allow(non_snake_case)]
     pub fn syncToolPkgRegistrations(activeContainers: &[ToolPkgContainerRuntime]) {
-        let mut hooks = activeContainers
+        let hooks = activeContainers
             .iter()
             .flat_map(|container| {
                 container.messageProcessingPlugins.iter().map(|hook| {
@@ -45,11 +45,6 @@ impl ToolPkgMessageProcessingBridge {
                 })
             })
             .collect::<Vec<_>>();
-        hooks.sort_by(|left, right| {
-            left.containerPackageName
-                .cmp(&right.containerPackageName)
-                .then(left.pluginId.cmp(&right.pluginId))
-        });
         let hookCount = hooks.len();
         *MESSAGE_PROCESSING_HOOKS
             .get_or_init(|| Mutex::new(Vec::new()))

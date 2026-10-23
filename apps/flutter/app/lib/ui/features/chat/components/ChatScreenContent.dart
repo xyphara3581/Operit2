@@ -108,8 +108,11 @@ class ChatScreenContent extends StatelessWidget {
     required this.isSpeechTranscribing,
     required this.onSpeechInput,
     this.selectedMessageTimestamps = const <int>{},
+    this.showInput = true,
   });
 
+  /// Keeps the shared transcript available when another workflow owns submission.
+  final bool showInput;
   final List<ChatUiMessage> messages;
   final bool loading;
   final String? errorMessage;
@@ -295,39 +298,40 @@ class ChatScreenContent extends StatelessWidget {
               // it down deactivates tooltip states whose global pointer
               // routes then crash on ancestor lookups ("deactivated
               // widget's ancestor"), matching the chat area treatment.
-              IgnorePointer(
-                ignoring: isPreparingChatSwitch,
-                child: Opacity(
-                  opacity: isPreparingChatSwitch ? 0 : 1,
-                  child: isMultiSelectMode
-                      ? ChatMultiSelectBar(
-                          selectedCount: selectedMessageTimestamps.length,
-                          allSelected:
-                              _selectableMessageTimestamps.isNotEmpty &&
-                              _selectableMessageTimestamps.length ==
-                                  selectedMessageTimestamps.length,
-                          onClose: onExitMultiSelectMode,
-                          onToggleSelectAll:
-                              _selectableMessageTimestamps.isNotEmpty &&
-                                  _selectableMessageTimestamps.length ==
-                                      selectedMessageTimestamps.length
-                              ? onClearMessageSelection
-                              : onSelectAllMessages,
-                          onCopy: selectedMessageTimestamps.isEmpty
-                              ? null
-                              : () => _copySelectedMessages(context),
-                          onShareImage: selectedMessageTimestamps.isEmpty
-                              ? null
-                              : () => _generateShareImage(context),
-                          onDelete: selectedMessageTimestamps.isEmpty
-                              ? null
-                              : () => _confirmDeleteSelected(context),
-                        )
-                      : DrawerGestureExclusion(
-                          child: _buildChatInputSection(inputStyle),
-                        ),
+              if (showInput || isMultiSelectMode)
+                IgnorePointer(
+                  ignoring: isPreparingChatSwitch,
+                  child: Opacity(
+                    opacity: isPreparingChatSwitch ? 0 : 1,
+                    child: isMultiSelectMode
+                        ? ChatMultiSelectBar(
+                            selectedCount: selectedMessageTimestamps.length,
+                            allSelected:
+                                _selectableMessageTimestamps.isNotEmpty &&
+                                _selectableMessageTimestamps.length ==
+                                    selectedMessageTimestamps.length,
+                            onClose: onExitMultiSelectMode,
+                            onToggleSelectAll:
+                                _selectableMessageTimestamps.isNotEmpty &&
+                                    _selectableMessageTimestamps.length ==
+                                        selectedMessageTimestamps.length
+                                ? onClearMessageSelection
+                                : onSelectAllMessages,
+                            onCopy: selectedMessageTimestamps.isEmpty
+                                ? null
+                                : () => _copySelectedMessages(context),
+                            onShareImage: selectedMessageTimestamps.isEmpty
+                                ? null
+                                : () => _generateShareImage(context),
+                            onDelete: selectedMessageTimestamps.isEmpty
+                                ? null
+                                : () => _confirmDeleteSelected(context),
+                          )
+                        : DrawerGestureExclusion(
+                            child: _buildChatInputSection(inputStyle),
+                          ),
+                  ),
                 ),
-              ),
             ],
           ),
         ),

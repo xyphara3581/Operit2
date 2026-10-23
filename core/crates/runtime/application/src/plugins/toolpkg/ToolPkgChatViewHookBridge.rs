@@ -98,7 +98,7 @@ impl ToolPkgChatViewHookBridge {
             .lock()
             .expect("toolpkg chat view hook mutex poisoned")
             .clone();
-        let mut nextHooks = activeContainers
+        let nextHooks = activeContainers
             .iter()
             .flat_map(|runtime| {
                 runtime
@@ -112,11 +112,6 @@ impl ToolPkgChatViewHookBridge {
                     })
             })
             .collect::<Vec<_>>();
-        nextHooks.sort_by(|left, right| {
-            left.containerPackageName
-                .cmp(&right.containerPackageName)
-                .then(left.hookId.cmp(&right.hookId))
-        });
         *CHAT_VIEW_HOOKS
             .get_or_init(|| Mutex::new(Vec::new()))
             .lock()

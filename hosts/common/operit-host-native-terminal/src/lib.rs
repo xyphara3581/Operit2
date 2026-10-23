@@ -96,7 +96,12 @@ impl PtyCommandSpec {
     /// Builds the default interactive bash command configuration.
     fn nativeBash() -> Self {
         Self {
-            program: if cfg!(target_os = "macos") { "/bin/bash" } else { "bash" }.to_string(),
+            program: if cfg!(target_os = "macos") {
+                "/bin/bash"
+            } else {
+                "bash"
+            }
+            .to_string(),
             args: vec![
                 "--noprofile".to_string(),
                 "--norc".to_string(),
@@ -494,7 +499,11 @@ impl TerminalHost for NativePtyTerminalHost {
                 .ok_or_else(|| {
                     HostError::new(format!("Terminal session does not exist: {sessionId}"))
                 })?;
-            if session.commandRunning { return Err(HostError::new("Terminal session already has a command in progress")); }
+            if session.commandRunning {
+                return Err(HostError::new(
+                    "Terminal session already has a command in progress",
+                ));
+            }
             clearPtyCommandOutput(&session.commandOutput)?;
             let commandInput = ptyCommandInput(&normalizedCommand, session.commandProtocol);
             let commandEcho = commandInput.trim_end().to_string();
@@ -513,8 +522,13 @@ impl TerminalHost for NativePtyTerminalHost {
             )
         };
 
-        let result =
-            executePtyCommandInSession(commandOutput, &commandEcho, timeoutMs, commandProtocol, onOutput);
+        let result = executePtyCommandInSession(
+            commandOutput,
+            &commandEcho,
+            timeoutMs,
+            commandProtocol,
+            onOutput,
+        );
         {
             let mut state = self.lockState()?;
             if let Some(session) = state.ptySessions.get_mut(&normalizedSessionId) {
@@ -525,7 +539,11 @@ impl TerminalHost for NativePtyTerminalHost {
                     if let Some(workingDir) = cancelTimedOutPtyCommand(session)? {
                         session.workingDir = workingDir;
                     }
-                } else if let Some(workingDir) = result.as_ref().ok().and_then(|receipt| receipt.workingDir.clone()) {
+                } else if let Some(workingDir) = result
+                    .as_ref()
+                    .ok()
+                    .and_then(|receipt| receipt.workingDir.clone())
+                {
                     session.workingDir = workingDir;
                 }
             }
@@ -713,10 +731,13 @@ fn createPtySession(
         .openpty(ptySize(rows, cols))
         .map_err(|error| HostError::new(format!("PTY open failed: {error}")))?;
     // Acquire all master handles before spawning, so setup errors cannot leak a shell.
-    let mut reader = pair.master.try_clone_reader()
+    let mut reader = pair
+        .master
+        .try_clone_reader()
         .map_err(|error| HostError::new(format!("PTY reader setup failed: {error}")))?;
-    let writer = Arc::new(Mutex::new(pair.master.take_writer()
-        .map_err(|error| HostError::new(format!("PTY writer setup failed: {error}")))?));
+    let writer = Arc::new(Mutex::new(pair.master.take_writer().map_err(|error| {
+        HostError::new(format!("PTY writer setup failed: {error}"))
+    })?));
     let command = posixPtyCommand(&workingDir, commandSpec);
     let mut child = pair.slave.spawn_command(command).map_err(|error| {
         HostError::new(format!(
@@ -733,24 +754,29 @@ fn createPtySession(
     let screenOutputForThread = screenOutput.clone();
     let writerForThread = writer.clone();
     let cursorStateForThread = cursorState.clone();
-    thread::spawn(move || {
-        let mut buffer = [0u8; 4096];
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(count) => {
-                    let chunk = &buffer[..count];
-                    processPtyTerminalQueries(&writerForThread, &cursorStateForThread, chunk);
-                    let commandChunk = stripPtyDeviceStatusReports(chunk);
-                    let visibleChunk = stripPtyPromptMarkers(&commandChunk);
-                    appendPtyOutput(&outputForThread, &visibleChunk);
-                    appendPtyOutput(&screenOutputForThread, &visibleChunk);
-                    appendPtyCommandOutput(&commandOutputForThread, &commandChunk);
+    let reader_task =
+        operit_host_native_scheduler::scheduleNativeServiceTask("operit-pty-reader", move || {
+            let mut buffer = [0u8; 4096];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        let chunk = &buffer[..count];
+                        processPtyTerminalQueries(&writerForThread, &cursorStateForThread, chunk);
+                        let commandChunk = stripPtyDeviceStatusReports(chunk);
+                        let visibleChunk = stripPtyPromptMarkers(&commandChunk);
+                        appendPtyOutput(&outputForThread, &visibleChunk);
+                        appendPtyOutput(&screenOutputForThread, &visibleChunk);
+                        appendPtyCommandOutput(&commandOutputForThread, &commandChunk);
+                    }
+                    Err(_) => break,
                 }
-                Err(_) => break,
             }
-        }
-    });
+        });
+    if let Err(error) = reader_task {
+        let _ = child.kill();
+        return Err(error);
+    }
     if commandSpec.commandProtocol == PtyCommandProtocol::ExplicitMarker {
         writePtyPromptMarker(&writer)?;
     }

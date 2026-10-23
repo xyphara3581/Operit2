@@ -481,9 +481,8 @@ impl SystemPromptConfig {
                 model_parameters: Vec::new(),
                 available_tools: Vec::new(),
                 metadata,
-                on_hook_timeout: None,
             })
-            .await;
+            .await?;
 
         let base_prompt = match before_context.system_prompt.clone() {
             Some(prompt) => prompt,
@@ -497,7 +496,7 @@ impl SystemPromptConfig {
                 system_prompt: Some(composed_prompt),
                 ..before_context
             })
-            .await;
+            .await?;
         let after_compose_prompt = compose_context.system_prompt.clone().unwrap_or_default();
         let after_context =
             PromptHookRegistry::dispatchSystemPromptComposeHooks(PromptHookContext {
@@ -505,7 +504,7 @@ impl SystemPromptConfig {
                 system_prompt: Some(after_compose_prompt),
                 ..compose_context
             })
-            .await;
+            .await?;
         Ok(after_context.system_prompt.unwrap_or_default())
     }
 }

@@ -30,7 +30,7 @@ We hope to gradually deliver an experience like this: start a task on a phone, l
 Each CoreNode can run its own Agent workflow independently. Its capabilities depend on the platform Host, model Provider, and local configuration. The current repository already includes:
 
 - Conversations, session branches, message management, attachments, character cards, character groups, and prompt configuration;
-- Provider configuration, model parameters, tool calls, request queues, and local model directories;
+- Provider configuration, model parameters, tool calls, request queues, and downloadable local chat models using embedded llama.cpp and MNN CPU inference;
 - Workspaces, file operations, project templates, commands, and backup/import/export;
 - Terminal sessions, PTY input, and output streams;
 - Web access, browser automation, workspace browsers, and runtime WebView session projections;

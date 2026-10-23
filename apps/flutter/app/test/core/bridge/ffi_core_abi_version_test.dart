@@ -10,35 +10,40 @@ import 'package:operit2/core/link/CoreLinkCodec.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('rejects ABI v1 before binding session or function addresses', () async {
-    const channel = MethodChannel('operit/runtime');
-    final messenger =
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    final transport = FfiCoreTransport();
-    var connectionAttempts = 0;
-    messenger.setMockMethodCallHandler(channel, (call) async {
-      expect(call.method, 'connectCoreFfi');
-      connectionAttempts++;
-      return jsonEncode({'version': 1});
-    });
-    addTearDown(() async {
-      await transport.close();
-      messenger.setMockMethodCallHandler(channel, null);
-    });
+  for (final version in [1, 2]) {
+    test(
+      'rejects ABI v$version before binding session or function addresses',
+      () async {
+        const channel = MethodChannel('operit/runtime');
+        final messenger =
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        final transport = FfiCoreTransport();
+        var connectionAttempts = 0;
+        messenger.setMockMethodCallHandler(channel, (call) async {
+          expect(call.method, 'connectCoreFfi');
+          connectionAttempts++;
+          return jsonEncode({'version': version});
+        });
+        addTearDown(() async {
+          await transport.close();
+          messenger.setMockMethodCallHandler(channel, null);
+        });
 
-    await expectLater(
-      transport.request(
-        CoreTransportOperation.call,
-        encodeCoreLinkMessage(null),
-      ),
-      throwsA(
-        isA<StateError>().having(
-          (error) => error.message,
-          'message',
-          'Unsupported Core FFI or Dart native API version',
-        ),
-      ),
+        await expectLater(
+          transport.request(
+            CoreTransportOperation.call,
+            encodeCoreLinkMessage(null),
+          ),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'Unsupported Core FFI or Dart native API version',
+            ),
+          ),
+        );
+        expect(connectionAttempts, 1);
+      },
     );
-    expect(connectionAttempts, 1);
-  });
+  }
 }

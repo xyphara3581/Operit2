@@ -65,30 +65,31 @@ test('platform construction has one explicit selection boundary', () => {
   assert.match(source(bridge + 'PlatformRuntimeExecution.rs'), /only place where the ABI execution style is selected/);
 });
 
-/** Prevents duplicate push ids from replacing the live original session. */
-test('shared push registration owns duplicate detection and sequence validation', () => {
+/** Requires bounded queues and one shared owner instead of per-watch scheduler tasks. */
+test('connection streams share one bounded Host task', () => {
   const transport = source(bridge + 'BridgeTransport.rs');
-  const open = section(transport, 'pub(crate) fn pushOpen(', '/// Validates sequence ownership');
-  assert.match(open, /Entry::Occupied[\s\S]*?PUSH_ALREADY_EXISTS/);
-  assert.match(open, /Entry::Vacant[\s\S]*?openPushLocal[\s\S]*?entry\.insert/);
-  assert.match(transport, /PUSH_SEQUENCE_MISMATCH/);
+  assert.match(transport, /FuturesUnordered/);
+  assert.equal((transport.match(/scheduleHostRuntimeAsyncTask\(/g) ?? []).length, 1);
+  for (const code of ['PUSH_ALREADY_EXISTS', 'WATCH_ALREADY_EXISTS', 'PUSH_SEQUENCE_MISMATCH', 'STREAM_BACKPRESSURE', 'PUSH_BACKPRESSURE']) {
+    assert.ok(transport.includes(code), code);
+  }
   assert.match(transport, /checked_add\(1\)/);
-  assert.equal((transport.match(/\.send\(self\.item\.args\)/g) ?? []).length, 1);
+  assert.match(transport, /Arc::ptr_eq/);
+  assert.match(transport, /entry\.tag == tag/);
+  assert.match(transport, /cancelled while opening/);
+  assert.doesNotMatch(transport, /spawn_local|thread::|WatchLease|PushItemTask/);
+  assert.doesNotMatch(source(bridge + 'BridgeRuntime.rs'), /watchSubscriptions|pushStreams/);
+  const execution = source(bridge + 'PlatformRuntimeExecution.rs');
+  assert.equal((execution.match(/spawn_local\(/g) ?? []).length, 1);
+  assert.match(execution, /BridgeStreams::start/);
+  const ffi = source(bridge + 'FfiTransport.rs');
+  assert.match(ffi, /recv_many/);
+  assert.match(ffi, /sendBatch/);
+  assert.match(ffi, /BridgeStreams::start/);
 });
 
-/** Protects cancellation during source opening and reuse of a completed subscription id. */
-test('watch registration generations prevent stale completion from cancelling new watches', () => {
-  const transport = source(bridge + 'BridgeTransport.rs');
-  assert.match(transport, /Arc::ptr_eq\(&entry\.generation, &self\.generation\)/);
-  assert.match(transport, /impl Drop for WatchLease/);
-  assert.match(transport, /WATCH_CLOSED[\s\S]*?cancelled while opening/);
-  assert.match(transport, /opened = CoreLinkSharedClient::watch[\s\S]*?=> opened\?/);
-  assert.match(transport, /subscription\.cancel\.send\(\(\)\)/);
-  assert.equal((transport.match(/pub\(crate\) fn closeWatchStream/g) ?? []).length, 1);
-});
-
-/** Requires ABI v2 for native Core transport and preserves lifecycle and browser entry points. */
-test('native Core transport exclusively exposes ABI v2', () => {
+/** Requires ABI v3 for native Core transport and preserves lifecycle and browser entry points. */
+test('native Core transport exclusively exposes ABI v3', () => {
   const exports = source(bridge + 'BridgeExports.rs');
   for (const name of ['create', 'create_with_storage_roots', 'destroy', 'emit_runtime_event', 'free_string']) {
     assert.match(exports, new RegExp(`fn operit_flutter_bridge_${name}\\(`));
@@ -99,7 +100,7 @@ test('native Core transport exclusively exposes ABI v2', () => {
 
   const ffi = source(bridge + 'FfiTransport.rs');
   assert.match(ffi, /fn operit_flutter_bridge_ffi_connect\(/);
-  assert.match(ffi, /"version": 2/);
+  assert.match(ffi, /"version": 3/);
   for (const name of ['bufferAllocate', 'bufferData', 'bufferSeal', 'bufferRetain', 'bufferRelease']) {
     assert.match(ffi, new RegExp(`"${name}":`));
   }
@@ -108,7 +109,7 @@ test('native Core transport exclusively exposes ABI v2', () => {
   assert.match(ffi, /SharedBuffer::retain\(\*handles\.add\(index\)\)/);
 
   const dart = source('apps/flutter/app/lib/core/bridge/FfiCoreTransport.dart');
-  const versionCheck = dart.indexOf("descriptor['version'] != 2");
+  const versionCheck = dart.indexOf("descriptor['version'] != 3");
   const sessionBinding = dart.indexOf("_address(descriptor, 'session')");
   assert.notEqual(versionCheck, -1);
   assert.ok(sessionBinding > versionCheck);

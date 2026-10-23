@@ -7,6 +7,8 @@ import vm from 'node:vm';
 
 /** Installs production host ownership/snapshot semantics and the shared SDK Promise helper. */
 export function installScopedHostRuntime(sandbox) {
+  /** Receives context changes without introducing execution deadlines in this fixture. */
+  sandbox.__operitNativeActivateCall = () => {};
   vm.runInContext(`
     globalThis.__operitCurrentCallId = 'owner';
     globalThis.refs = 0;

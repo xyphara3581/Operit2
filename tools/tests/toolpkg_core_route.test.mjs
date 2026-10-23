@@ -10,7 +10,7 @@ const implementedServices = readFileSync(new URL("./fixtures/compiled/toolpkg_ro
 
 /** Executes genuine TypeScript decorator output using the production Promise and cancellation runtimes. */
 function fixture() {
-  const sandbox = vm.createContext({ ToolPkg: {}, exports: {} });
+  const sandbox = vm.createContext({ ToolPkg: {}, exports: {}, /** Receives the active native execution owner. */ __operitNativeActivateCall() {} });
   vm.runInContext(initSource, sandbox);
   const registry = installScopedHostRuntime(sandbox);
   const calls = [], watches = [], reads = [], closed = [], pushes = [], sent = [], pushClosed = [];

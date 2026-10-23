@@ -11,7 +11,7 @@ import { composeNodes, keyedNode } from './selector-render.mjs';
 let modules;
 test.before(async () => { modules = await buildUiScreenScripts(); });
 const summary = (id, changes = {}) => ({ id, title: '对话 ' + id, updatedAt: '1791059541109', displayOrder: Number(id.slice(1)) || 0,
-  workspaceId: null, workspaceName: null, locked: false, pinned: false, group: id === "c1" || id === "c2" ? "行程分组" : null, ...changes });
+  workspaceId: null, workspaceName: null, locked: false, pinned: false, group: id === "c1" || id === "c2" ? "行程分组" : null, parentChatId: null, ...changes });
 function context(chats, changes = {}) { return { input: { view: 'characters' }, chatSidebar: { chats, currentChatId: 'c1', activeStreamingChatIds: [], ...changes } }; }
 function catalog(chats) { return { view: 'characters', sections: [
   { id: 'card:travel', title: '旅行角色', avatarUri: null, kind: 'card', selection: 'card:travel', chats,
@@ -672,4 +672,27 @@ test('a newly activated chat refreshes its role category and selection from host
   assert.equal(keyedNode(result.tree, 'sidebar-status-c4').props.selected, true);
   assert.equal(keyedNode(result.tree, 'sidebar-status-c1').props.selected, false);
   assert.equal(screen.calls.filter(call => call.name === 'character-sidebar.catalog').length, 2);
+});
+
+/** Uses the real retained Compose screen to verify child collapse, updates, indentation and search paths. */
+test('parent conversations contain running children without expanding during live updates', async () => {
+  const chats = [summary('c1'), summary('c2', { parentChatId: 'c1', title: 'Nested task' }),
+    summary('c3', { parentChatId: 'c2', title: 'Deep task' })];
+  const screen = mount(context(chats, { activeStreamingChatIds: ['c2'] }), catalog(chats));
+  let { tree } = await screen.load();
+  assert.ok(keyedNode(tree, 'sidebar-chat-c1'));
+  assert.equal(composeNodes(tree, node => node.props.key === 'sidebar-chat-c2').length, 0);
+  ({ tree } = await screen.click(tree, 'sidebar-children-c1'));
+  assert.ok(keyedNode(tree, 'sidebar-chat-c2'));
+  assert.equal(keyedNode(tree, 'sidebar-chat-c2').props.paddingStart - keyedNode(tree, 'sidebar-chat-c1').props.paddingStart, 16);
+  assert.equal(composeNodes(tree, node => node.props.key === 'sidebar-chat-c3').length, 0);
+  ({ tree } = await screen.click(tree, 'sidebar-children-c1'));
+  ({ tree } = await screen.update(context(chats, { activeStreamingChatIds: ['c2', 'c3'] })));
+  assert.equal(composeNodes(tree, node => node.props.key === 'sidebar-chat-c2').length, 0);
+  ({ tree } = await screen.click(tree, 'sidebar-search-toggle'));
+  ({ tree } = await screen.dispatch(keyedNode(tree, 'sidebar-search').props.onValueChange, 'Deep task'));
+  for (const id of ['c1', 'c2', 'c3']) assert.ok(keyedNode(tree, 'sidebar-chat-' + id));
+  ({ tree } = await screen.dispatch(keyedNode(tree, 'sidebar-search').props.onValueChange, ''));
+  assert.equal(composeNodes(tree, node => node.props.key === 'sidebar-chat-c2').length, 0);
+  assert.equal(screen.calls.some(call => call.name === 'character-memory.domain'), false);
 });

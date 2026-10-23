@@ -17,6 +17,7 @@ import '../../../common/layout/ApplicationZoom.dart';
 import '../../../theme/OperitGlassSurface.dart';
 import '../../../theme/OperitTheme.dart';
 import '../../../theme/OperitThemeAssets.dart';
+import '../components/SettingsAssetTile.dart';
 import '../components/SettingsControlStyles.dart';
 import 'ChatAppearancePreview.dart';
 import 'ThemeConfigurationControl.dart';
@@ -152,7 +153,7 @@ class AppearanceSettingsPanel extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 10),
-              _CompactAssetTile(
+              SettingsAssetTile(
                 icon: Icons.font_download_outlined,
                 title: l10n.settingsAppearanceCustomFont,
                 subtitle: _customFontLabel(l10n, snapshot.customFontPath),
@@ -275,7 +276,7 @@ class AppearanceSettingsPanel extends StatelessWidget {
               },
             ),
             const SizedBox(height: 8),
-            _CompactAssetTile(
+            SettingsAssetTile(
               icon: isVideo
                   ? Icons.movie_creation_outlined
                   : Icons.image_outlined,
@@ -536,7 +537,7 @@ class AppearanceSettingsPanel extends StatelessWidget {
           title: l10n.settingsAppearanceBubbleFontSection,
           icon: Icons.font_download_outlined,
           children: <Widget>[
-            _CompactAssetTile(
+            SettingsAssetTile(
               icon: Icons.person_outline,
               title: l10n.settingsAppearanceUserBubbleFont,
               subtitle: _bubbleFontLabel(l10n, snapshot, isUser: true),
@@ -559,7 +560,7 @@ class AppearanceSettingsPanel extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 8),
-            _CompactAssetTile(
+            SettingsAssetTile(
               icon: Icons.smart_toy_outlined,
               title: l10n.settingsAppearanceAiBubbleFont,
               subtitle: _bubbleFontLabel(l10n, snapshot, isUser: false),
@@ -587,7 +588,7 @@ class AppearanceSettingsPanel extends StatelessWidget {
           title: l10n.settingsAppearanceBubbleImageSection,
           icon: Icons.layers_outlined,
           children: <Widget>[
-            _CompactAssetTile(
+            SettingsAssetTile(
               icon: Icons.person_outline,
               title: l10n.settingsAppearanceUserBubbleImage,
               subtitle: _fileNameOrNoneLabel(
@@ -650,7 +651,7 @@ class AppearanceSettingsPanel extends StatelessWidget {
                   : null,
             ),
             const SizedBox(height: 8),
-            _CompactAssetTile(
+            SettingsAssetTile(
               icon: Icons.smart_toy_outlined,
               title: l10n.settingsAppearanceAiBubbleImage,
               subtitle: _fileNameOrNoneLabel(
@@ -1643,7 +1644,7 @@ Future<void> _showBubbleFontDialog(
                   ),
                 ),
                 const SizedBox(height: 10),
-                _CompactAssetTile(
+                SettingsAssetTile(
                   icon: Icons.folder_open_outlined,
                   title: l10n.settingsAppearanceCustomFont,
                   subtitle: _customFontLabel(l10n, customFontPath),
@@ -3906,86 +3907,6 @@ class _AppearanceFieldBlock extends StatelessWidget {
         const SizedBox(height: 6),
         child,
       ],
-    );
-  }
-}
-
-class _CompactAssetTile extends StatelessWidget {
-  const _CompactAssetTile({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.actions,
-    this.bottom,
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final List<Widget> actions;
-  final Widget? bottom;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.25),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: colorScheme.outlineVariant.withValues(alpha: 0.24),
-          width: 0.8,
-        ),
-      ),
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          Row(
-            children: <Widget>[
-              Icon(icon, size: 20, color: colorScheme.primary),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    Text(
-                      title,
-                      style: textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 1),
-                    Text(
-                      subtitle,
-                      style: textTheme.bodySmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                        fontSize: 11,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: actions,
-              ),
-            ],
-          ),
-          if (bottom != null) ...<Widget>[const SizedBox(height: 6), bottom!],
-        ],
-      ),
     );
   }
 }

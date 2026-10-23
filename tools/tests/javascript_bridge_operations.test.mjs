@@ -30,6 +30,8 @@ function runtime(operations = {}) {
   vm.runInContext(source('hosts/web/src/javascript_promises.js'), context);
   const registry = context.__operitHostPromiseRegistry;
   const builtins = {
+    /** Receives the exact execution owner selected by the production call registry. */
+    __operitNativeActivateCall() { return null; },
     /** Reads the exact trusted library requested by its production accessor. */
     __operitNativeReadBootstrapLibrary: bootstrapLibrarySource,
     __operitNativePrepareComposeModule: compileComposeModule,
@@ -185,7 +187,7 @@ test('script completion uses structured host values with JSON text disabled', as
   const { context, outputs, failures } = runtime();
   vm.runInContext('JSON.parse = JSON.stringify = function() { throw Error("JSON transport used"); };', context);
   executeScript(context, 'script-owner', {__operit_toolpkg_api_version: '2.0.0'},
-    'exports.run = function() { return { literal: "{\\\"data\\\":1}", nested: {value: 7} }; };', 'run', 60, 10000);
+    'exports.run = function() { return { literal: "{\\\"data\\\":1}", nested: {value: 7} }; };', 'run');
   await flush();
   assert.equal(failures.size, 0);
   assert.equal(outputs.get('script-owner').literal, '{"data":1}');
@@ -228,7 +230,7 @@ test('cancelled tool execution releases a waiting chat initializer without reviv
         released++;
       }
     };
-  `, 'run', 60, 10000);
+  `, 'run');
   await flush();
   executeScript(context, 'new-chat-owner', params, `
     /** Reads the binding through the same serialized queue using the new chat's own session. */
@@ -236,7 +238,7 @@ test('cancelled tool execution releases a waiting chat initializer without reviv
       const binding = await store.data();
       return { selection: binding.get('selection'), owner: __operitCurrentCallId };
     };
-  `, 'run', 60, 10000);
+  `, 'run');
   await flush();
   assert.equal(outputs.size, 0);
   context.__operitCancelCallSession('weather-owner');
@@ -259,7 +261,7 @@ test('cancelled tool execution releases a waiting chat initializer without reviv
 test('cyclic script results fail explicitly rather than producing replacement data', async () => {
   const { context, outputs, failures } = runtime();
   executeScript(context, 'cycle-owner', {__operit_toolpkg_api_version: '2.0.0'},
-    'exports.run = function() { var value = {}; value.self = value; return value; };', 'run', 60, 10000);
+    'exports.run = function() { var value = {}; value.self = value; return value; };', 'run');
   await flush();
   assert.equal(outputs.size, 0);
   assert.equal(failures.get('cycle-owner').success, false);
@@ -400,7 +402,7 @@ test('module reads preserve empty source and propagate the original resource-own
   executeScript(successful.context, 'modules', {
     __operit_toolpkg_api_version:'2.0.0', toolPkgId:'fixture', __operit_ui_package_name:'fixture',
     __operit_script_screen:'dist/main.js',
-  }, 'var empty = require("./empty"); var shared = require("./shared"); exports.run = function() { return {empty:empty.missing===undefined, label:shared.label}; };', 'run', 60, 10000);
+  }, 'var empty = require("./empty"); var shared = require("./shared"); exports.run = function() { return {empty:empty.missing===undefined, label:shared.label}; };', 'run');
   await flush();
   assert.equal(successful.failures.size, 0);
   assert.equal(successful.outputs.get('modules').empty, true);
@@ -412,7 +414,7 @@ test('module reads preserve empty source and propagate the original resource-own
   executeScript(failed.context, 'failed-modules', {
     __operit_toolpkg_api_version:'2.0.0', toolPkgId:'fixture', __operit_ui_package_name:'fixture',
     __operit_script_screen:'dist/main.js',
-  }, 'var shared = require("./shared"); exports.run = function() { return shared; };', 'run', 60, 10000);
+  }, 'var shared = require("./shared"); exports.run = function() { return shared; };', 'run');
   await flush();
   assert.equal(failed.outputs.size, 0);
   assert.match(failed.failures.get('failed-modules').message, /resource owner read denied/);

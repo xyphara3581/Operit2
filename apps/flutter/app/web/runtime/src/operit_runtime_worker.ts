@@ -414,18 +414,18 @@ const workerCoreOperationRegistrations = new Map<WorkerCoreOperation, WorkerCore
   ["emitRuntimeEvent", { execution: "serialized", invoke: async (runtime, message) =>
     new TextEncoder().encode(await runtime.emitRuntimeEvent(requireStringPayload(message))) }],
   ["controlCall", { execution: "parallel", invoke: (runtime, message) => runtime.controlCall(requireBytesPayload(message)) }],
-  ["pushOpen", { execution: "serialized", invoke: (runtime, message) => runtime.pushOpen(requireBytesPayload(message)) }],
-  ["pushItem", { execution: "serialized", invoke: (runtime, message) => runtime.pushItem(requireBytesPayload(message)) }],
-  ["pushClose", { execution: "serialized", invoke: (runtime, message) => runtime.pushClose(requireStringPayload(message)) }],
-  ["watchSnapshot", { execution: "serialized", invoke: (runtime, message) => runtime.watchSnapshot(requireBytesPayload(message)) }],
-  ["watchStream", { execution: "serialized", invoke: (runtime, message) => runtime.watchStream(requireBytesPayload(message), event => {
+  ["pushOpen", { execution: "parallel", invoke: (runtime, message) => runtime.pushOpen(requireBytesPayload(message)) }],
+  ["pushItem", { execution: "parallel", invoke: (runtime, message) => runtime.pushItem(requireBytesPayload(message)) }],
+  ["pushClose", { execution: "parallel", invoke: (runtime, message) => runtime.pushClose(requireStringPayload(message)) }],
+  ["watchSnapshot", { execution: "parallel", invoke: (runtime, message) => runtime.watchSnapshot(requireBytesPayload(message)) }],
+  ["watchStream", { execution: "parallel", invoke: (runtime, message) => runtime.watchStream(requireBytesPayload(message), event => {
     const copiedEvent = Uint8Array.from(event);
     postWorkerMessage(
       { type: "coreWatchEvent", id: message.id, event: copiedEvent, clientId: message.clientId },
       [copiedEvent.buffer],
     );
   }) }],
-  ["closeWatchStream", { execution: "serialized", invoke: (runtime, message) => runtime.closeWatchStream(requireStringPayload(message)) }],
+  ["closeWatchStream", { execution: "parallel", invoke: (runtime, message) => runtime.closeWatchStream(requireStringPayload(message)) }],
 ]);
 
 /** Returns the binary payload required by a binary Core Link operation. */

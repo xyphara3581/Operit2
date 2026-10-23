@@ -4,8 +4,8 @@ import { fixture } from "./fixtures.mjs";
 import { loadModule, plain } from "./runtime.mjs";
 function summaries() {
   return [
-    { id: "ui-chat-one", title: "完整第一条对话", updatedAt: "2026-10-08T12:00:00Z", displayOrder: 0, workspaceId: "workspace-one", workspaceName: "工作区一", locked: false, pinned: true, group: null },
-    { id: "ui-chat-two", title: "另一条锁定对话", updatedAt: "2026-10-08T12:00:01Z", displayOrder: 1, workspaceId: "workspace-one", workspaceName: "工作区一", locked: true, pinned: false, group: null },
+    { id: "ui-chat-one", title: "完整第一条对话", updatedAt: "2026-10-08T12:00:00Z", displayOrder: 0, workspaceId: "workspace-one", workspaceName: "工作区一", parentChatId: null, locked: false, pinned: true, group: null },
+    { id: "ui-chat-two", title: "另一条锁定对话", updatedAt: "2026-10-08T12:00:01Z", displayOrder: 1, workspaceId: "workspace-one", workspaceName: "工作区一", parentChatId: null, locked: true, pinned: false, group: null },
   ];
 }
 /** Validates the exact neutral host-state shape and rejects plugin role fields rather than inspecting them. */
@@ -66,4 +66,17 @@ test("model-only chat bindings remain in the unbound sidebar category", () => {
   const unbound = sections.find(section => section.id === "unbound");
   assert.deepEqual(unbound.chats.map(chat => chat.id), chats.map(chat => chat.id));
   assert.equal(sections.some(section => section.id === "model:chat"), false);
+});
+
+/** Keeps surviving orphan conversations reachable and rejects recursive native metadata explicitly. */
+test("conversation tree preserves sibling order and validates parent cycles", () => {
+  const { SidebarChatTree } = loadModule("src/sidebar-chat-tree.ts");
+  const [parent, child] = summaries(); child.parentChatId = parent.id;
+  const orphan = { ...child, id: "surviving-child", parentChatId: "deleted-parent" };
+  const tree = new SidebarChatTree([child, parent, orphan]);
+  assert.deepEqual([...tree.roots], [parent.id, orphan.id]);
+  assert.deepEqual(plain(tree.children.get(parent.id)), [child]);
+  assert.deepEqual([...tree.matching([child, parent, orphan], chat => chat.id === child.id)], [child.id, parent.id]);
+  assert.throws(() => new SidebarChatTree([parent, parent]), /Duplicate conversation id/);
+  assert.throws(() => new SidebarChatTree([{ ...parent, parentChatId: child.id }, child]), /Cyclic conversation parent/);
 });

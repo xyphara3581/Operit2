@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:operit_ui/operit_ui.dart';
 import 'package:operit2/core/host/AppToastController.dart';
 import 'package:operit2/ui/common/AppToastHost.dart';
 import 'package:operit2/ui/common/MacNoticeScaffoldMessenger.dart';
@@ -11,6 +12,64 @@ void main() {
   setUp(AppToastController.instance.reset);
 
   tearDown(AppToastController.instance.reset);
+
+  for (final initiallyVisible in [false, true]) {
+    testWidgets(
+      'notice ${initiallyVisible ? "exit" : "entry"} retains the application background and input',
+      (tester) async {
+        final controller = AppToastController.instance;
+        final int? initialNotice = initiallyVisible
+            ? controller.show('Already queued')
+            : null;
+        const mediaKey = ValueKey('background-media');
+        await tester.pumpWidget(
+          MaterialApp(
+            builder: (context, child) => AppToastHost(
+              child: LiquidGlassBackdrop(
+                background: StatefulBuilder(
+                  key: mediaKey,
+                  builder: (context, setState) =>
+                      const ColoredBox(color: Colors.teal),
+                ),
+                child: child!,
+              ),
+            ),
+            home: const Scaffold(
+              backgroundColor: Colors.transparent,
+              body: TextField(),
+            ),
+          ),
+        );
+        await _pumpNotice(tester);
+        await tester.enterText(find.byType(TextField), 'Keep this draft');
+        final backdrop = tester.state(find.byType(LiquidGlassBackdrop));
+        final media = tester.state(find.byKey(mediaKey));
+        final input = tester.state(find.byType(EditableText));
+        final int? queuedNotice;
+        if (initialNotice == null) {
+          queuedNotice = controller.show('Added to queue');
+        } else {
+          queuedNotice = null;
+          controller.dismiss(initialNotice);
+        }
+        await _pumpNotice(tester);
+        expect(tester.state(find.byType(LiquidGlassBackdrop)), same(backdrop));
+        expect(tester.state(find.byKey(mediaKey)), same(media));
+        expect(tester.state(find.byType(EditableText)), same(input));
+        expect(find.text('Keep this draft'), findsOneWidget);
+        final extra = controller.show('Another queued message');
+        await _pumpNotice(tester);
+        controller.dismiss(extra);
+        if (queuedNotice != null) controller.dismiss(queuedNotice);
+        await _pumpNotice(tester);
+        expect(tester.state(find.byType(LiquidGlassBackdrop)), same(backdrop));
+        expect(tester.state(find.byKey(mediaKey)), same(media));
+        expect(tester.state(find.byType(EditableText)), same(input));
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
 
   testWidgets('shows a host notice at the top-right of the window', (
     tester,

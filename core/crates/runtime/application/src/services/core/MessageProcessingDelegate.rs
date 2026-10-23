@@ -75,7 +75,6 @@ fn openCoreResponseStream(
     request: CoreWatchRequest,
 ) -> Result<CoreEventStream, CoreLinkError> {
     let (sender, receiver) = CoreEventStream::channel();
-    let mut orderedStream = stream;
     AppLogger::trace(
         "CoreStreamTrace",
         &format!(
@@ -90,95 +89,106 @@ fn openCoreResponseStream(
         .scheduleHostRuntimeAsyncTask(
             "core-runtime-text-markdown",
             Box::new(move || {
-                Box::pin(async move {
-                    let mut markdownStream = MarkdownRenderEventStream::new(streamKey.clone());
-                    let mut textRevisions = TextStreamRevisionTracker::new("");
-                    let mut itemCollector = |item: ResponseStreamItem| match item {
-                        ResponseStreamItem::Chunk(chunk) => {
-                            let _ = textRevisions.append(&chunk);
-                            let events = markdownStream.pushChunk(&chunk);
-                            for event in events {
-                                sendCoreTextEvent(
-                                    &sender,
-                                    &request.requestId,
-                                    request.target.clone(),
-                                    &request.propertyName,
-                                    CoreEventKind::Changed,
-                                    operit_link::toCoreValue(event)
-                                        .expect("MarkdownStreamEvent must serialize"),
-                                );
-                            }
-                        }
-                        ResponseStreamItem::Revision(event) => {
-                            let markdownEvent = match event.event_type {
-                                operit_util::stream::RevisableTextStream::TextStreamEventType::Savepoint => {
-                                    textRevisions.savepoint(&event.id);
-                                    AppLogger::trace_detail(
-                                        "CoreStreamTrace",
-                                        &format!(
-                                            "response.revision.savepoint streamKey={} id={}",
-                                            streamKey, event.id
-                                        ),
-                                    );
-                                    MarkdownStreamEvent::savepoint(streamKey.clone(), event.id)
-                                }
-                                operit_util::stream::RevisableTextStream::TextStreamEventType::Rollback => {
-                                    match textRevisions.rollback(&event.id) {
-                                        Some(content) => markdownStream.restoreContent(content),
-                                        None => {
-                                            AppLogger::w(
-                                                "CoreStreamTrace",
-                                                &format!(
-                                                    "markdown rollback savepoint missing; keeping current content streamKey={} id={}",
-                                                    streamKey, event.id
-                                                ),
-                                            );
-                                        }
-                                    }
-                                    AppLogger::trace_detail(
-                                        "CoreStreamTrace",
-                                        &format!(
-                                            "response.revision.rollback streamKey={} id={}",
-                                            streamKey, event.id
-                                        ),
-                                    );
-                                    MarkdownStreamEvent::rollback(streamKey.clone(), event.id)
-                                }
-                            };
-                            sendCoreTextEvent(
-                                &sender,
-                                &request.requestId,
-                                request.target.clone(),
-                                &request.propertyName,
-                                CoreEventKind::Changed,
-                                operit_link::toCoreValue(markdownEvent)
-                                    .expect("MarkdownStreamEvent must serialize"),
-                            );
-                        }
-                    };
-                    orderedStream.collect_ordered(&mut itemCollector).await;
-                    let completionValue = operit_link::toCoreValue(markdownStream.completed())
-                        .expect("MarkdownStreamEvent must serialize");
-                    AppLogger::trace(
-                        "CoreStreamTrace",
-                        &format!(
-                            "response.completed requestId={} streamKey={}",
-                            request.requestId.0, streamKey
-                        ),
-                    );
-                    sendCoreTextEvent(
-                        &sender,
-                        &request.requestId,
-                        request.target.clone(),
-                        &request.propertyName,
-                        CoreEventKind::Completed,
-                        completionValue,
-                    );
-                })
+                Box::pin(collectCoreResponseStream(stream, streamKey, request, sender))
             }),
         )
         .map_err(|error| CoreLinkError::internal(error.to_string()))?;
     Ok(receiver)
+}
+
+/// Transforms one observer's stream until its receiver closes or generation completes.
+async fn collectCoreResponseStream(
+    mut orderedStream: SharedAiResponseStream,
+    streamKey: String,
+    request: CoreWatchRequest,
+    sender: tokio::sync::mpsc::UnboundedSender<CoreEvent>,
+) {
+    let mut markdownStream = MarkdownRenderEventStream::new(streamKey.clone());
+    let mut textRevisions = TextStreamRevisionTracker::new("");
+    let mut itemCollector = |item: ResponseStreamItem| match item {
+        ResponseStreamItem::Chunk(chunk) => {
+            let _ = textRevisions.append(&chunk);
+            let events = markdownStream.pushChunk(&chunk);
+            for event in events {
+                sendCoreTextEvent(
+                    &sender,
+                    &request.requestId,
+                    request.target.clone(),
+                    &request.propertyName,
+                    CoreEventKind::Changed,
+                    operit_link::toCoreValue(event).expect("MarkdownStreamEvent must serialize"),
+                );
+            }
+        }
+        ResponseStreamItem::Revision(event) => {
+            let markdownEvent = match event.event_type {
+                operit_util::stream::RevisableTextStream::TextStreamEventType::Savepoint => {
+                    textRevisions.savepoint(&event.id);
+                    AppLogger::trace_detail(
+                        "CoreStreamTrace",
+                        &format!(
+                            "response.revision.savepoint streamKey={} id={}",
+                            streamKey, event.id
+                        ),
+                    );
+                    MarkdownStreamEvent::savepoint(streamKey.clone(), event.id)
+                }
+                operit_util::stream::RevisableTextStream::TextStreamEventType::Rollback => {
+                    match textRevisions.rollback(&event.id) {
+                        Some(content) => markdownStream.restoreContent(content),
+                        None => {
+                            AppLogger::w(
+                                "CoreStreamTrace",
+                                &format!(
+                                    "markdown rollback savepoint missing; keeping current content streamKey={} id={}",
+                                    streamKey, event.id
+                                ),
+                            );
+                        }
+                    }
+                    AppLogger::trace_detail(
+                        "CoreStreamTrace",
+                        &format!(
+                            "response.revision.rollback streamKey={} id={}",
+                            streamKey, event.id
+                        ),
+                    );
+                    MarkdownStreamEvent::rollback(streamKey.clone(), event.id)
+                }
+            };
+            sendCoreTextEvent(
+                &sender,
+                &request.requestId,
+                request.target.clone(),
+                &request.propertyName,
+                CoreEventKind::Changed,
+                operit_link::toCoreValue(markdownEvent)
+                    .expect("MarkdownStreamEvent must serialize"),
+            );
+        }
+    };
+    tokio::select! {
+        biased;
+        _ = sender.closed() => return,
+        _ = orderedStream.collect_ordered(&mut itemCollector) => {},
+    }
+    let completionValue = operit_link::toCoreValue(markdownStream.completed())
+        .expect("MarkdownStreamEvent must serialize");
+    AppLogger::trace(
+        "CoreStreamTrace",
+        &format!(
+            "response.completed requestId={} streamKey={}",
+            request.requestId.0, streamKey
+        ),
+    );
+    sendCoreTextEvent(
+        &sender,
+        &request.requestId,
+        request.target.clone(),
+        &request.propertyName,
+        CoreEventKind::Completed,
+        completionValue,
+    );
 }
 
 /// Sends one typed Markdown event through a Core stream channel.
@@ -190,29 +200,14 @@ fn sendCoreTextEvent(
     kind: CoreEventKind,
     value: CoreValue,
 ) {
-    if sender
-        .send(CoreEvent {
-            requestId: Some(requestId.clone()),
-            target: target.clone(),
-            propertyName: propertyName.to_string(),
-            kind,
-            value,
-        })
-        .is_err()
-    {
-        AppLogger::e(
-            "CoreStreamTrace",
-            &format!(
-                "response.event.receiver_closed requestId={} target={} property={}",
-                requestId.0, target, propertyName
-            ),
-        );
-    }
-}
-
-/// Builds the localized host notice for a timed-out ToolPkg pre-send hook.
-fn buildToolPkgHookTimeoutNotice(pluginIdentifier: String) -> String {
-    format!("前置插件「{pluginIdentifier}」响应超时，已跳过并继续发送")
+    // A disposed observer owns no output channel; its producer remains independent.
+    let _ = sender.send(CoreEvent {
+        requestId: Some(requestId.clone()),
+        target,
+        propertyName: propertyName.to_string(),
+        kind,
+        value,
+    });
 }
 
 /// Waits for the actual originating stream and persistence completion without retaining the chat holder lock.
@@ -1332,10 +1327,6 @@ impl MessageProcessingDelegate {
         );
 
         let buildUserMessageStartTime = messageTimingNow();
-        let nonFatalErrorEventFlow = self.nonFatalErrorEventFlow.clone();
-        let onHookTimeout = Arc::new(move |pluginIdentifier: String| {
-            nonFatalErrorEventFlow.set_value(Some(buildToolPkgHookTimeoutNotice(pluginIdentifier)));
-        });
         let finalMessageContent =
             AIMessageManager::buildUserMessageContent(BuildUserMessageContentRequest {
                 messageText: request.messageText,
@@ -1349,7 +1340,6 @@ impl MessageProcessingDelegate {
                 enableDirectVideoProcessing,
                 chatId: Some(request.chatId.clone()),
                 participantId: Some(request.participantId),
-                onHookTimeout: Some(onHookTimeout),
             })
             .await?;
         logMessageTiming(
@@ -2801,6 +2791,69 @@ mod tests {
         Arc,
     };
     use tokio::sync::oneshot;
+
+    /// Closing an observer ends its transform while production and a fresh live subscriber continue.
+    #[tokio::test]
+    async fn disposed_response_observer_stops_without_cancelling_generation() {
+        use operit_link::{
+            CoreEventKind, CoreEventStream, CoreRequestId, CoreValue, CoreWatchRequest,
+        };
+        use operit_providers::chat::llmprovider::AIService::SharedAiResponseStream;
+        use operit_util::stream::HotStream::mutable_shared_stream;
+
+        let producer = SharedAiResponseStream::new_ordered(
+            mutable_shared_stream(usize::MAX),
+            mutable_shared_stream(usize::MAX),
+        );
+        let request = CoreWatchRequest {
+            requestId: CoreRequestId("observer".to_string()),
+            target: "$core.stream.open".to_string(),
+            propertyName: "openCoreStream".to_string(),
+            args: CoreValue::emptyMap(),
+        };
+        let (sender, receiver) = CoreEventStream::channel();
+        let first = super::collectCoreResponseStream(
+            producer.clone(),
+            "response".to_string(),
+            request.clone(),
+            sender,
+        );
+        tokio::pin!(first);
+        assert!(first.as_mut().now_or_never().is_none());
+        producer.emit_chunk("before ".to_string());
+        assert!(first.as_mut().now_or_never().is_none());
+        drop(receiver);
+        assert!(first.as_mut().now_or_never().is_some());
+
+        producer.emit_chunk("after".to_string());
+        let (sender, mut receiver) = CoreEventStream::channel();
+        let second = super::collectCoreResponseStream(
+            producer.clone(),
+            "response".to_string(),
+            request,
+            sender,
+        );
+        tokio::pin!(second);
+        assert!(second.as_mut().now_or_never().is_none());
+        producer.emit_chunk(" live".to_string());
+        assert!(second.as_mut().now_or_never().is_none());
+        producer.close();
+        second.await;
+        let mut text = String::new();
+        let mut completed = false;
+        while let Some(event) = receiver.recv().await {
+            completed |= event.kind == CoreEventKind::Completed;
+            if let CoreValue::Map(fields) = event.value {
+                if fields.get("type") == Some(&CoreValue::String("chunk".to_string())) {
+                    if let Some(CoreValue::String(content)) = fields.get("value") {
+                        text.push_str(content);
+                    }
+                }
+            }
+        }
+        assert_eq!(text, "before after live");
+        assert!(completed);
+    }
 
     /// Removes long provider metadata before applying the notification length limit.
     #[test]

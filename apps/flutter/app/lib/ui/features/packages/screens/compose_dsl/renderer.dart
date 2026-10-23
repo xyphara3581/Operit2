@@ -632,7 +632,11 @@ class _ComposeDslRendererState extends State<_ComposeDslRenderer> {
       case 'SnackbarHost':
         return _slotOrChildren('content');
       case 'AiChat':
-        return const AIChatEmbed();
+        return AIChatEmbed(
+          clients: webViewHostContext.clients,
+          chatId: node.props['chatId'] as String?,
+          showInput: node.props['showInput'] as bool? ?? true,
+        );
       case 'AdaptiveSidePanel':
         return _adaptiveSidePanel();
       case 'PullToRefreshBox':

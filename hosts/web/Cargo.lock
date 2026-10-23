@@ -283,6 +283,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1318,6 +1327,7 @@ name = "operit-local-models"
 version = "2.0.0-preview.17"
 dependencies = [
  "bzip2-rs",
+ "cmake",
  "operit-host-api",
  "operit-util",
  "serde",
@@ -1423,6 +1433,7 @@ name = "operit-plugin-sdk-ipc"
 version = "2.0.0-preview.17"
 dependencies = [
  "async-trait",
+ "futures-util",
  "operit-host-api",
  "operit-link",
  "serde",
@@ -1576,7 +1587,7 @@ dependencies = [
 
 [[package]]
 name = "operit-runtime"
-version = "2.0.0-preview.17"
+version = "2.0.0-preview.18"
 dependencies = [
  "aes",
  "async-trait",

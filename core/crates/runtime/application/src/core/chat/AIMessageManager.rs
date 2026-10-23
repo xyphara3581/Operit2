@@ -56,8 +56,6 @@ pub struct BuildUserMessageContentRequest {
     pub enableDirectVideoProcessing: bool,
     pub chatId: Option<String>,
     pub participantId: Option<String>,
-    /// Host callback used to surface a timed-out Prompt Input Hook.
-    pub onHookTimeout: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
 pub struct SendMessageRequest<'a> {
@@ -216,9 +214,9 @@ impl AIMessageManager {
             input: request.messageText,
             chat_id: request.chatId.clone(),
             participant_id: request.participantId.clone(),
-            on_hook_timeout: request.onHookTimeout.clone(),
         })
-        .await;
+        .await
+        .map_err(AiServiceError::RequestFailed)?;
         logMessageTiming(
             "buildUserMessageContent.processUserInput",
             promptInputStartTime,

@@ -473,6 +473,13 @@ fn requireSpaceFile(storagePath: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_model_files_cannot_enter_space_file_sync() {
+        for path in ["runtime/models/local/chat/llama_cpp/qwen/model.gguf", "runtime/models/local/chat/mnn/qwen/llm.mnn.weight", operit_util::RuntimeStorageLayout::RUNTIME_LOCAL_MODEL_REGISTRY_PATH] {
+            assert!(super::requireSpaceFile(path).is_err(), "{path}");
+        }
+    }
+
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 

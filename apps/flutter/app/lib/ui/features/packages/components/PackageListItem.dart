@@ -16,6 +16,7 @@ class PackageListItem extends StatefulWidget {
     required this.enabled,
     required this.onEnabledChanged,
     this.onDetails,
+    this.primaryAction,
     this.showEnabledSwitch = true,
     this.trailingActions = const <Widget>[],
     this.hasError = false,
@@ -30,6 +31,7 @@ class PackageListItem extends StatefulWidget {
   final bool enabled;
   final ValueChanged<bool> onEnabledChanged;
   final VoidCallback? onDetails;
+  final Widget? primaryAction;
   final bool showEnabledSwitch;
   final List<Widget> trailingActions;
   final bool hasError;
@@ -164,6 +166,11 @@ class _PackageListItemState extends State<PackageListItem> {
                           ),
                         ),
                       ),
+                    if (widget.primaryAction
+                        case final Widget action) ...<Widget>[
+                      SizedBox(width: 6 * scale),
+                      action,
+                    ],
                     if (widget.showEnabledSwitch) ...<Widget>[
                       SizedBox(width: 6 * scale),
                       Switch(

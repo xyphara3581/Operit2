@@ -1,9 +1,9 @@
-# Flutter Core FFI transport (ABI v2)
+# Flutter Core FFI transport (ABI v3)
 
-Native Flutter Core calls and streams use ABI version `2` exclusively. ABI v1,
+Native Flutter Core calls and streams use ABI version `3` exclusively. ABI v1 and v2,
 the synchronous C Core-call exports, `OperitByteBuffer`, and the native watch
 polling queue have been removed. Dart rejects any descriptor whose `version` is
-not `2` before binding session pointers or function addresses.
+not `3` before binding session pointers or function addresses.
 
 ## Connection and platform ownership
 
@@ -13,7 +13,7 @@ descriptor from `operit_flutter_bridge_ffi_connect`:
 
 | Field | Contract |
 | --- | --- |
-| `version` | Integer `2` |
+| `version` | Integer `3` |
 | `session` | Retained connection pointer |
 | `attach` | Registers `NativeApi.postCObject` and the Dart native port |
 | `allocate`, `free` | Allocate and release an unsubmitted request allocation |
@@ -71,7 +71,7 @@ that has not been submitted.
 | pushClose | 3 | UTF-8 push ID |
 | watchSnapshot | 4 | `[requestId, target, propertyName, args]` |
 | watchStream | 5 | `[subscriptionId, requestId, target, propertyName, args]` |
-| closeWatchStream | 6 | UTF-8 subscription ID |
+| closeWatchStream | 6 | `[subscriptionId, watchOpenFfiRequestId]` |
 
 The integer FFI `requestId` correlates port replies within one connection. The
 request ID inside a MessagePack request is the separate Link request ID.
@@ -100,10 +100,13 @@ they are not network addresses or untrusted serialized pointers.
 
 ## Asynchronous replies and events
 
-`NativeApi.postCObject` delivers an array envelope:
+`NativeApi.postCObject` always delivers a batch of independently owned frames, including singleton batches:
 
 ```text
-[controlFrame, handle, receipt, address, length, ...]
+[
+  [controlFrame, handle, receipt, address, length, ...],
+  [controlFrame, handle, receipt, address, length, ...]
+]
 ```
 
 `controlFrame` is external typed data whose allocation is retained by a native
@@ -150,7 +153,7 @@ explicit closure. Closing one connection does not cancel another's watches.
 Web uses `WebWasmCoreProxy`, JS interop, the Runtime Worker, and Rust WASM. It
 shares the Core request/result/watch protocol, while `CoreLinkMessage.toBytes()`
 materializes portable inline MessagePack binary values. Native shared pointers
-and ABI-v2 port envelopes remain within the native host boundary.
+and ABI-v3 port envelopes remain within the native host boundary.
 
 ## Host and bridge ownership
 
@@ -166,7 +169,7 @@ and ABI-v2 port envelopes remain within the native host boundary.
 | `PlatformRuntimeExecution` | Native lifecycle/owner-event scheduling and browser Promise execution |
 | `PlatformRuntimeAbi` | ABI module selection |
 | `BridgeExports` | Runtime lifecycle, host exports, and browser ABI |
-| `FfiTransport` | Exclusive native Core ABI-v2 session, dispatch, and port delivery |
+| `FfiTransport` | Exclusive native Core ABI-v3 session, dispatch, and port delivery |
 | `AndroidJni` | Android host integration and connection bootstrap |
 
 Platform-specific dependencies and conditional compilation stay at host or ABI
@@ -192,3 +195,44 @@ VM port delivery, including shared-buffer identity, finalization, concurrent
 requests, early events, cancellation, errors, and connection ownership. Running
 that suite builds its native Rust test fixture. These checks do not replace
 integration testing of the production library with each platform host.
+
+## Stream ownership and scheduling
+
+Each native or browser connection owns one stream coordinator. Multiple push and
+watch IDs share its command channel (capacity 64). Each push preserves FIFO with
+a bounded queue (capacity 16), and watches share an outbox (capacity 64). Source
+opening, delivery, cancellation and ID reuse are owned by this coordinator.
+Independent streams progress while another source is waiting or backpressured.
+
+A close identifies both the subscription ID and its opening request generation.
+It cancels pending source creation and blocked delivery immediately. A stale close
+cannot remove a newer registration with the same ID. Native delivery batches
+multiple subscriptions in one VM message; binary attachment tables belong to
+individual frames. Browser delivery carries the same nine-byte kind/correlation
+header, with explicit watch value, error and close frames.
+
+The Host owns process-wide worker allocation. Cooperative I/O and timers remain
+separate from synchronous blocking work. Native HTTP and WebSocket futures share
+four network workers. Long-lived blocking OS listeners use admitted service
+capacity; a multi-pipe process reserves its complete pipeline atomically.
+Java owner callbacks, script execution, compilation and COM operations preserve
+independent execution capacity when synchronous callers can wait for them.
+
+Desktop and mobile worker limits are process-wide and initialized when first used:
+
+| Host capacity | Worker limit |
+| --- | ---: |
+| Asynchronous coordination | 16 |
+| Finite blocking work | 16 |
+| HTTP and WebSocket I/O | 4 |
+| JavaScript execution states | 4 |
+| JavaScript compilation | 1 |
+| Persistent blocking OS services | 16 |
+| Android Java owner callbacks | 8 |
+| Isolated platform operations | 1 |
+
+These are allocation limits for application-owned workers, not a count of all
+threads inside Flutter, the JVM or third-party libraries. Device embeddings use
+a process-shared asynchronous worker and a separate blocking worker with their
+own stack and I/O policy. Waiting futures retain their owner thread; new
+subscriptions and HTTP requests do not allocate new operating-system threads.

@@ -1343,6 +1343,7 @@ impl ChatHistoryDelegate {
         service: &EnhancedAIService,
         setAsCurrentChat: bool,
         sourceChatId: Option<String>,
+        parentChatId: Option<String>,
         input: Option<Value>,
     ) -> Result<String, String> {
         self.createChatDraft(
@@ -1350,6 +1351,7 @@ impl ChatHistoryDelegate {
             ToolPkgChatCreationKind::New,
             setAsCurrentChat,
             sourceChatId,
+            parentChatId,
             None,
             input,
         )
@@ -1363,6 +1365,7 @@ impl ChatHistoryDelegate {
         creationKind: ToolPkgChatCreationKind,
         setAsCurrentChat: bool,
         sourceChatId: Option<String>,
+        parentChatId: Option<String>,
         sourceMessageTimestamp: Option<i64>,
         input: Option<Value>,
     ) -> Result<String, String> {
@@ -1388,7 +1391,11 @@ impl ChatHistoryDelegate {
             return Err("Branch creation requires a source chat".to_string());
         }
         let workspaceId = source.as_ref().and_then(|chat| chat.workspaceId.clone());
-        let parentChatId = if isBranch { sourceChatId.clone() } else { None };
+        if let Some(id) = &parentChatId {
+            self.chatHistoryManager.loadChatHistory(id.clone())
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("Parent chat does not exist: {id}"))?;
+        }
         let title = if isBranch {
             source
                 .as_ref()
@@ -1400,7 +1407,7 @@ impl ChatHistoryDelegate {
         };
         let mut draft = self
             .chatHistoryManager
-            .newChatDraft(title, BTreeMap::new(), workspaceId, parentChatId)
+            .newChatDraft(title, BTreeMap::new(), workspaceId, parentChatId.clone())
             .map_err(|error| error.to_string())?;
         let api = ChatConfigurationApi::ready(&service.tool_handler).await?;
         let hooks = ToolPkgChatLifecycleHookBridge::snapshot().await?;
@@ -1455,7 +1462,7 @@ impl ChatHistoryDelegate {
             })
             .transpose()?;
         let configuration = api.resolveDraft(request.clone(), ownerExtension).await?;
-        if !isBranch && setAsCurrentChat {
+        if !isBranch && setAsCurrentChat && parentChatId.is_none() {
             if let Some(currentId) = self.currentChatIdFlow.value() {
                 if sourceChatId.as_ref() == Some(&currentId) {
                     let current = self
@@ -1606,6 +1613,7 @@ impl ChatHistoryDelegate {
             service,
             ToolPkgChatCreationKind::Branch,
             true,
+            Some(sourceChatId.clone()),
             Some(sourceChatId),
             upToMessageTimestamp,
             None,

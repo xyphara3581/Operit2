@@ -242,6 +242,7 @@ class _OperitMainScreenState extends State<OperitMainScreen> {
           await _clients.chatRuntimeHolderMain.createNewChat(
             setAsCurrentChat: true,
             sourceChatId: null,
+            parentChatId: null,
             input: null,
           );
         } catch (error, stackTrace) {

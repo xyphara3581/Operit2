@@ -389,14 +389,31 @@ impl ExtensionStore {
         }
     }
 
-    /// Selects shared built-in code only for its canonical installation or an unseen initial state.
-    pub fn acceptsSharedBuiltinPackage(&self, id: &str) -> Result<bool, String> {
-        if let Some(record) = self.records("package")?.into_iter()
-            .find(|record| record.id == id && record.scope == "space") {
-            return Ok(record.sourceName.is_empty() && record.settings["builtin"] == true);
-        }
-        let path = recordPath("package", id, "space")?;
-        Ok(!RuntimeFileSyncStore::new(self.storage.clone(), RUNTIME_SYNC_DIR_PATH).hasSnapshot(&path)?)
+    /// Selects bundled code from its real owner; a shared installation replaces the local bundled record.
+    pub fn acceptsBuiltinPackage(&self, id: &str) -> Result<bool, String> {
+        let records = self.records("package")?.into_iter()
+            .filter(|record| record.id == id).collect::<Vec<_>>();
+        let local = records.iter().find(|record| record.scope == "device");
+        let shared = records.iter().find(|record| record.scope == "space");
+        let owner = match (local, shared) {
+            (Some(local), Some(shared)) => {
+                if local.settings["builtin"] != true || !local.sourceName.is_empty() {
+                    return Err(format!("Extension ownership conflict: package:{id}"));
+                }
+                self.remove(local)?;
+                shared
+            }
+            (Some(record), None) | (None, Some(record)) => record,
+            (None, None) => {
+                let local = recordPath("package", id, "device")?.replace("/records/", "/uninstalled/");
+                if self.storage.exists(&local).map_err(|e| e.to_string())? {
+                    return Ok(false);
+                }
+                let path = recordPath("package", id, "space")?;
+                return Ok(!RuntimeFileSyncStore::new(self.storage.clone(), RUNTIME_SYNC_DIR_PATH).hasSnapshot(&path)?);
+            }
+        };
+        Ok(owner.sourceName.is_empty() && owner.settings["builtin"] == true)
     }
 
     /// Publishes an explicitly reinstalled bundled source while retaining its scope and settings.
@@ -541,11 +558,6 @@ impl ExtensionStore {
         } else {
             let mut source = self.record(kind, id)?;
             if source.scope == scope { return Ok(()); }
-            if source.settings.get("builtin").and_then(Value::as_bool) == Some(true) {
-                return Err(
-                    "Built-in application resources do not have an installation scope".into(),
-                );
-            }
             let mut target = source.clone();
             target.scope = scope.to_string();
             self.validate(&target)?;
@@ -590,32 +602,24 @@ impl ExtensionStore {
             "runtime/extensions/device/deletions/{kind}-{:x}.json",
             Sha256::digest(id.as_bytes())
         );
-        let record: ExtensionRecord = if self.storage.exists(&journal).map_err(|e| e.to_string())? {
-            serde_json::from_slice(
-                &self
-                    .storage
-                    .readBytes(&journal)
-                    .map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?
+        let resuming = self.storage.exists(&journal).map_err(|e| e.to_string())?;
+        let mut record: ExtensionRecord = if resuming {
+            serde_json::from_slice(&self.storage.readBytes(&journal).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?
         } else {
-            let mut record = self.record(kind, id)?;
-            record.files = self.snapshot(&record)?;
-            self.storage
-                .writeBytes(
-                    &journal,
-                    &serde_json::to_vec(&record).map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())?;
-            record
+            self.record(kind, id)?
         };
         if record.kind != kind || record.id != id {
             return Err("Deletion journal identity mismatch".into());
         }
+        if !resuming {
+            record.files = self.snapshot(&record)?;
+            self.storage.writeBytes(&journal, &serde_json::to_vec(&record).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        }
+        self.retireBuiltinPackage(&record)?;
         self.remove(&record)?;
-        self.storage
-            .delete(&journal, false)
-            .map_err(|e| e.to_string())?;
+        self.storage.delete(&journal, false).map_err(|e| e.to_string())?;
         notifyCatalogChanged();
         Ok(())
     }
@@ -629,6 +633,7 @@ impl ExtensionStore {
             .filter(|record| record.id == id)
             .collect::<Vec<_>>();
         for record in &records {
+            self.retireBuiltinPackage(record)?;
             self.remove(record)?;
         }
         if !records.is_empty() {
@@ -637,65 +642,13 @@ impl ExtensionStore {
         Ok(!records.is_empty())
     }
 
-    /// Merges legacy device-scope builtin records into their required space installation.
-    ///
-    /// Older binaries registered every built-in package in device scope even when the
-    /// manifest required space ownership, so upgraded installs can hold both records and
-    /// fail ownership resolution. Only unambiguous builtin duplicates are merged; every
-    /// other conflict still surfaces to the caller.
-    #[allow(non_snake_case)]
-    pub fn reconcileBuiltinScopeDuplicates(
-        &self,
-        kind: &str,
-        id: &str,
-        requiredScope: &str,
-    ) -> Result<bool, String> {
-        validateScope(requiredScope)?;
-        if requiredScope != "space" {
-            return Ok(false);
+    /// Records explicit device-local uninstallation so bundled scans cannot recreate the package.
+    fn retireBuiltinPackage(&self, record: &ExtensionRecord) -> Result<(), String> {
+        if record.kind == "package" && record.scope == "device" && record.settings["builtin"] == true {
+            let path = recordPath("package", &record.id, "device")?.replace("/records/", "/uninstalled/");
+            self.storage.writeBytes(&path, b"true").map_err(|e| e.to_string())?;
         }
-        let records = self
-            .records(kind)?
-            .into_iter()
-            .filter(|record| record.id == id)
-            .collect::<Vec<_>>();
-        if records.len() <= 1 {
-            return Ok(false);
-        }
-        let allBuiltin = records.iter().all(|record| {
-            record.settings.get("builtin").and_then(Value::as_bool) == Some(true)
-        });
-        let onlyLocalDuplicates = records
-            .iter()
-            .filter(|record| record.scope != requiredScope)
-            .all(|record| record.scope == "device");
-        let canonical = records
-            .iter()
-            .find(|record| record.scope == requiredScope)
-            .cloned();
-        let Some(canonical) = canonical else {
-            return Ok(false);
-        };
-        if !allBuiltin || !onlyLocalDuplicates {
-            return Ok(false);
-        }
-        let mut merged = canonical.settings.clone();
-        for duplicate in records.iter().filter(|record| record.scope != requiredScope) {
-            mergePackageSettings(&mut merged, &duplicate.settings);
-        }
-        merged["builtin"] = Value::Bool(true);
-        merged["installationScope"] = Value::String(requiredScope.to_string());
-        if merged != canonical.settings {
-            let mut updated = canonical.clone();
-            updated.settings = merged;
-            self.validate(&updated)?;
-            self.write(&updated)?;
-        }
-        for duplicate in records.iter().filter(|record| record.scope != requiredScope) {
-            self.removeRecordMetadata(duplicate)?;
-        }
-        notifyCatalogChanged();
-        Ok(true)
+        Ok(())
     }
 
     /// Resolves a known package scope before registration without requiring an installation record.
@@ -1115,59 +1068,6 @@ impl ExtensionStore {
         }
         Ok(())
     }
-}
-
-/// Merges legacy package settings without overriding values the canonical record owns.
-fn mergePackageSettings(target: &mut Value, source: &Value) {
-    for key in ["members", "enabledNames", "disabledNames"] {
-        mergeStringArray(target, source, key);
-    }
-    mergeSubpackageStates(target, source);
-    let targetOrder = target.get("order").and_then(Value::as_u64).unwrap_or(0);
-    let sourceOrder = source.get("order").and_then(Value::as_u64).unwrap_or(0);
-    if sourceOrder > targetOrder {
-        target["order"] = Value::from(sourceOrder);
-    }
-}
-
-/// Appends unseen string entries while preserving the canonical record's order.
-fn mergeStringArray(target: &mut Value, source: &Value, key: &str) {
-    let mut merged = target
-        .get(key)
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if let Some(values) = source.get(key).and_then(Value::as_array) {
-        for value in values.iter().filter_map(Value::as_str) {
-            if !merged.iter().any(|existing| existing == value) {
-                merged.push(value.to_string());
-            }
-        }
-    }
-    target[key] = serde_json::json!(merged);
-}
-
-/// Fills missing subpackage states from the legacy duplicate without overwriting canonical state.
-fn mergeSubpackageStates(target: &mut Value, source: &Value) {
-    let mut merged = target
-        .get("subpackageStates")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    if let Some(values) = source.get("subpackageStates").and_then(Value::as_object) {
-        for (name, enabled) in values {
-            merged
-                .entry(name.clone())
-                .or_insert_with(|| enabled.clone());
-        }
-    }
-    target["subpackageStates"] = Value::Object(merged);
 }
 
 /// Creates a collision-resistant entity path without deriving filesystem paths from display names.

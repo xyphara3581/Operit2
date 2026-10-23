@@ -633,6 +633,7 @@ def build_ohos_rust_bridge() -> None:
                 f"-C link-arg=--target={OHOS_CLANG_TARGET} "
                 f"-C link-arg=--sysroot={sysroot_arg}"
             ),
+            "OHOS_NATIVE_HOME": str(native_dir),
             "CC_aarch64_unknown_linux_ohos": str(clang),
             "CXX_aarch64_unknown_linux_ohos": str(executable_path(llvm_bin / "clang++")),
             "AR_aarch64_unknown_linux_ohos": str(llvm_ar),

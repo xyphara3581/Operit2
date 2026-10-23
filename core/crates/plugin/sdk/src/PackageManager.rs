@@ -487,7 +487,6 @@ mod tests {
             _envOverrides: &BTreeMap<String, String>,
             _onIntermediateResult: Option<Arc<dyn Fn(String) + Send + Sync>>,
             _dispatchIntermediateOnMain: bool,
-            _timeoutSec: u64,
         ) -> crate::javascript::JsExecutionCompletion<JsExecutionResult<Option<String>>> {
             let result = (|| {
                 Ok(params
@@ -528,7 +527,6 @@ mod tests {
             _env_overrides: BTreeMap<String, String>,
             _on_intermediate_result: Option<Arc<dyn Fn(String) + Send + Sync>>,
             _dispatch_intermediate_on_main: bool,
-            _timeout_millis: u64,
         ) -> JsExecutionFuture<JsExecutionResult<Option<String>>> {
             Box::pin(async move {
                 Ok(params
@@ -721,7 +719,7 @@ mod tests {
                 runtimeKind: None,
                 envOverrides: BTreeMap::new(),
                 timestampMs: 1,
-                timeoutMillis: 10_000,
+                timeoutMillis: None,
                 dispatchIntermediateOnMain: true,
                 onIntermediateResult: None,
             },

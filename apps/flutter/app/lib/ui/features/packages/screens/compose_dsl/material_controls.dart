@@ -56,6 +56,33 @@ extension _ComposeMaterialControls on _ComposeDslRendererState {
       ),
       contentPadding: node.props['contentPadding'],
     );
+    final themeSurface = node.props['themeSurface'];
+    if (themeSurface != null) {
+      final layer = switch (themeSurface) {
+        'panel' => OperitGlassSurfaceLayer.panel,
+        'card' => OperitGlassSurfaceLayer.card,
+        'control' => OperitGlassSurfaceLayer.control,
+        _ => throw FormatException(
+          'Unknown theme surface layer: $themeSurface',
+        ),
+      };
+      final color = _colorWithAlpha(
+        context,
+        node.props['containerColor'],
+        node.props['containerAlpha'] ?? node.props['alpha'],
+      );
+      if (color == null) {
+        throw const FormatException('Themed cards require a containerColor');
+      }
+      return OperitGlassSurface(
+        color: color,
+        layer: layer,
+        borderRadius: radius ?? BorderRadius.zero,
+        border: borderSide == null ? null : Border.fromBorderSide(borderSide),
+        material: true,
+        child: child,
+      );
+    }
     return Card(
       margin: EdgeInsets.zero,
       color: _colorWithAlpha(
