@@ -2050,7 +2050,7 @@ mod tests {
             .spawn()
             .expect("start test shell");
         let mut input = child.stdin.take().expect("test shell stdin");
-        input.write_all(b"false\\n").expect("write test command");
+        input.write_all(b"false\n").expect("write test command");
         drop(input);
 
         let output = child.wait_with_output().expect("wait for test shell");
@@ -2073,9 +2073,9 @@ mod tests {
             nextTerminalId()
         ));
         let _ = std::fs::remove_file(&marker);
-        let mut child = Command::new("sh")
+        let child = Command::new("sh")
             .arg("-c")
-            .arg("sleep 1; printf side-effect > \\"$OPERIT_TEST_MARKER\\"")
+            .arg(r#"sleep 1; printf side-effect > "$OPERIT_TEST_MARKER""#)
             .env("OPERIT_TEST_MARKER", &marker)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -2084,10 +2084,10 @@ mod tests {
             .spawn()
             .expect("start PTY process-group fixture");
 
-        // Let the child spawn its foreground sleep before killing the whole group.
+        // Let the shell start its foreground sleep before killing the whole group.
         thread::sleep(Duration::from_millis(100));
         terminateAndroidPtyProcessGroup(child.id() as libc::pid_t);
-        // The helper reaps the leader; avoid asking std::process::Child to wait twice.
+        // The helper reaps the leader; Child::drop does not perform another wait.
         drop(child);
         thread::sleep(Duration::from_millis(1100));
         assert!(!marker.exists(), "descendant performed a delayed side effect");
