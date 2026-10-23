@@ -41,7 +41,59 @@ set(MNN_WIN_RUNTIME_MT OFF CACHE BOOL "" FORCE)
 set(LLM_SUPPORT_HTTP_RESOURCE OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(mnn URL https://codeload.github.com/alibaba/MNN/zip/refs/tags/3.6.1
     URL_HASH SHA256=93d60848879e68be554c247afe376657630a30652a7d8ec713e9e7d1bbf69260)
-FetchContent_MakeAvailable(mnn)
+# MNN 3.6.1 registers a POST_BUILD command on the `llm` target for Android.
+# When MNN_SEP_BUILD=OFF that target is an OBJECT library, and CMake rejects
+# build-event commands on OBJECT libraries. Patch the upstream CMake file before
+# adding MNN as a subdirectory, copying the headers at configure time instead.
+FetchContent_GetProperties(mnn)
+if(NOT mnn_POPULATED)
+    FetchContent_Populate(mnn)
+endif()
+
+set(_mnn_llm_cmake_file "${mnn_SOURCE_DIR}/transformers/llm/engine/CMakeLists.txt")
+if(NOT EXISTS "${_mnn_llm_cmake_file}")
+    message(FATAL_ERROR "MNN LLM CMake file not found: ${_mnn_llm_cmake_file}")
+endif()
+file(READ "${_mnn_llm_cmake_file}" _mnn_llm_cmake_contents)
+
+set(_mnn_llm_patch_marker [=[file(COPY ${CMAKE_CURRENT_LIST_DIR}/include/ DESTINATION ${NATIVE_INCLUDE_OUTPUT})]=])
+string(FIND "${_mnn_llm_cmake_contents}" "${_mnn_llm_patch_marker}" _mnn_llm_patched_index)
+if(_mnn_llm_patched_index EQUAL -1)
+    set(_mnn_llm_needle [=[IF(NOT NATIVE_INCLUDE_OUTPUT)
+  set(NATIVE_INCLUDE_OUTPUT ".")
+ENDIF()
+add_custom_command(
+  TARGET llm
+  POST_BUILD
+  COMMAND ${CMAKE_COMMAND}
+  ARGS -E copy_directory ${CMAKE_CURRENT_LIST_DIR}/include ${NATIVE_INCLUDE_OUTPUT}
+)
+ELSE()]=])
+    set(_mnn_llm_replacement [=[IF(NOT NATIVE_INCLUDE_OUTPUT)
+  set(NATIVE_INCLUDE_OUTPUT ".")
+ENDIF()
+IF(NOT MNN_SEP_BUILD)
+  # Workaround for MNN's OBJECT library + POST_BUILD incompatibility.
+  file(COPY ${CMAKE_CURRENT_LIST_DIR}/include/ DESTINATION ${NATIVE_INCLUDE_OUTPUT})
+ELSE()
+add_custom_command(
+  TARGET llm
+  POST_BUILD
+  COMMAND ${CMAKE_COMMAND}
+  ARGS -E copy_directory ${CMAKE_CURRENT_LIST_DIR}/include ${NATIVE_INCLUDE_OUTPUT}
+)
+ENDIF()
+ELSE()]=])
+    string(FIND "${_mnn_llm_cmake_contents}" "${_mnn_llm_needle}" _mnn_llm_needle_index)
+    if(_mnn_llm_needle_index EQUAL -1)
+        message(FATAL_ERROR "MNN LLM CMake workaround failed: expected upstream POST_BUILD block was not found")
+    endif()
+    string(REPLACE "${_mnn_llm_needle}" "${_mnn_llm_replacement}" _mnn_llm_cmake_patched "${_mnn_llm_cmake_contents}")
+    file(WRITE "${_mnn_llm_cmake_file}" "${_mnn_llm_cmake_patched}")
+    message(STATUS "Applied MNN LLM OBJECT-library POST_BUILD workaround")
+endif()
+
+add_subdirectory("${mnn_SOURCE_DIR}" "${mnn_BINARY_DIR}")
 add_library(operit_local_llm STATIC inference.cpp)
 target_include_directories(operit_local_llm PRIVATE
     ${llama_SOURCE_DIR}/include
