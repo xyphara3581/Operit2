@@ -5,7 +5,11 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.Display
+import android.view.Surface
+import android.view.View
+import android.view.ViewGroup
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterSurfaceView
 import io.flutter.embedding.engine.FlutterEngine
 
 class MainActivity : FlutterActivity() {
@@ -168,21 +172,53 @@ class MainActivity : FlutterActivity() {
                 }
                 .maxByOrNull { it.refreshRate }
                 ?: return
+        val preferredRefreshRate = preferredMode.refreshRate
 
-        if (preferredMode.modeId == currentMode.modeId) {
-            return
-        }
-
+        // Prefer a refresh-rate vote over pinning a display mode/resolution. Android 11+
+        // can then arbitrate this request with system settings, battery saver and thermals.
         val attributes = window.attributes
-        if (attributes.preferredDisplayModeId == preferredMode.modeId) {
-            return
+        if (attributes.preferredRefreshRate != preferredRefreshRate ||
+            attributes.preferredDisplayModeId != 0
+        ) {
+            attributes.preferredDisplayModeId = 0
+            attributes.preferredRefreshRate = preferredRefreshRate
+            window.attributes = attributes
         }
-        attributes.preferredDisplayModeId = preferredMode.modeId
-        window.attributes = attributes
+
+        // Flutter's primary Android renderer is a SurfaceView. A window preference alone
+        // may not communicate the intended cadence to the Flutter surface on every device.
+        window.decorView.post {
+            requestFlutterSurfaceFrameRate(preferredRefreshRate)
+        }
         Log.i(
             TAG,
-            "Requested display mode ${preferredMode.physicalWidth}x${preferredMode.physicalHeight}@${preferredMode.refreshRate}Hz",
+            "Requested Flutter refresh rate ${preferredRefreshRate}Hz; current display rate=${display.refreshRate}Hz",
         )
+    }
+
+    private fun requestFlutterSurfaceFrameRate(refreshRate: Float) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return
+        }
+
+        fun applyTo(view: View) {
+            if (view is FlutterSurfaceView) {
+                val surface = view.holder.surface
+                if (surface.isValid) {
+                    surface.setFrameRate(
+                        refreshRate,
+                        Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                    )
+                }
+            }
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    applyTo(view.getChildAt(index))
+                }
+            }
+        }
+
+        applyTo(window.decorView)
     }
 
     @Suppress("DEPRECATION")
