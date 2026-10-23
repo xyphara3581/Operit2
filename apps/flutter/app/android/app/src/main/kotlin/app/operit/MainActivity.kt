@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.util.Log
 import android.view.Display
 import android.view.Surface
+import android.view.SurfaceHolder
 import android.view.View
 import android.view.ViewGroup
 import io.flutter.embedding.android.FlutterActivity
@@ -48,6 +49,35 @@ class MainActivity : FlutterActivity() {
             activeActivity = null
         }
         super.onDestroy()
+    }
+
+    /**
+     * Requests the display's high-refresh mode after Flutter has created its actual render
+     * surface. On some Android OEM builds, setting the preference only in onCreate/onResume
+     * happens before this surface is attached and the foreground Flutter UI remains at 60 Hz.
+     */
+    override fun onFlutterSurfaceViewCreated(flutterSurfaceView: FlutterSurfaceView) {
+        super.onFlutterSurfaceViewCreated(flutterSurfaceView)
+        requestHighestRefreshRate()
+
+        // SurfaceView's Surface may not be valid at view creation time. Reapply the content
+        // frame-rate vote when SurfaceHolder reports that the real surface becomes available.
+        flutterSurfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                applySurfaceFrameRate(holder.surface)
+            }
+
+            override fun surfaceChanged(
+                holder: SurfaceHolder,
+                format: Int,
+                width: Int,
+                height: Int,
+            ) {
+                applySurfaceFrameRate(holder.surface)
+            }
+
+            override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
+        })
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -196,6 +226,23 @@ class MainActivity : FlutterActivity() {
         )
     }
 
+    private fun applySurfaceFrameRate(surface: Surface, refreshRate: Float? = null) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !surface.isValid) {
+            return
+        }
+        val rate = refreshRate ?: highestSupportedRefreshRate() ?: return
+        runCatching {
+            surface.setFrameRate(rate, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
+        }.onFailure { error ->
+            Log.w(TAG, "Unable to submit Flutter surface frame-rate preference", error)
+        }
+    }
+
+    private fun highestSupportedRefreshRate(): Float? {
+        val display = currentDisplay() ?: return null
+        return display.supportedModes.maxOfOrNull { it.refreshRate }
+    }
+
     private fun requestFlutterSurfaceFrameRate(refreshRate: Float) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             return
@@ -204,12 +251,7 @@ class MainActivity : FlutterActivity() {
         fun applyTo(view: View) {
             if (view is FlutterSurfaceView) {
                 val surface = view.holder.surface
-                if (surface.isValid) {
-                    surface.setFrameRate(
-                        refreshRate,
-                        Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
-                    )
-                }
+                applySurfaceFrameRate(surface, refreshRate)
             }
             if (view is ViewGroup) {
                 for (index in 0 until view.childCount) {
