@@ -184,6 +184,10 @@ jobs:
             Push-Location $d.FullName
             corepack pnpm install --frozen-lockfile
             $code = $LASTEXITCODE
+            if ($code -eq 0 -and (Test-Path 'node_modules/esbuild/install.js')) {
+              Write-Host 'esbuild postinstall (pnpm10 blocks build scripts)'
+              node node_modules/esbuild/install.js
+            }
             Pop-Location
             if ($code -ne 0) { throw "pnpm install failed in $($d.Name) with exit $code" }
           }
@@ -202,6 +206,7 @@ jobs:
         run: |
           Push-Location plugins/packages/buildin/workflow
           corepack pnpm install --frozen-lockfile
+          if (Test-Path 'node_modules/esbuild/install.js') { node node_modules/esbuild/install.js }
           Write-Host '--- node_modules check ---'
           foreach ($m in @('typescript','esbuild','fflate')) {
             $p = "node_modules/$m"
@@ -209,6 +214,8 @@ jobs:
           }
           Write-Host '--- tsc version ---'
           corepack pnpm exec tsc --version
+          Write-Host '--- esbuild smoke test ---'
+          node -e "const e=require('esbuild');console.log('esbuild', e.version)"
           Write-Host '--- running pack:toolpkg with full output ---'
           corepack pnpm run pack:toolpkg
           $code = $LASTEXITCODE
