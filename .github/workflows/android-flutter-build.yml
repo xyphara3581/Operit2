@@ -216,11 +216,28 @@ jobs:
           corepack pnpm exec tsc --version
           Write-Host '--- esbuild smoke test ---'
           node -e "const e=require('esbuild');console.log('esbuild', e.version)"
-          Write-Host '--- running pack:toolpkg with full output ---'
-          corepack pnpm run pack:toolpkg
-          $code = $LASTEXITCODE
+          Write-Host '--- STEP 1: tsc -p tsconfig.json ---'
+          $out = & node node_modules/typescript/bin/tsc -p tsconfig.json 2>&1 | Out-String
+          $c1 = $LASTEXITCODE
+          Write-Host "exit=$c1"
+          Write-Host $out
+          if ($c1 -ne 0) { Pop-Location; throw "tsc tsconfig.json failed ($c1)" }
+
+          Write-Host '--- STEP 2: tsc -p web/tsconfig.json ---'
+          $out2 = & node node_modules/typescript/bin/tsc -p web/tsconfig.json 2>&1 | Out-String
+          $c2 = $LASTEXITCODE
+          Write-Host "exit=$c2"
+          Write-Host $out2
+          if ($c2 -ne 0) { Pop-Location; throw "tsc web failed ($c2)" }
+
+          Write-Host '--- STEP 3: build:web ---'
+          $out3 = & corepack pnpm run build:web 2>&1 | Out-String
+          $c3 = $LASTEXITCODE
+          Write-Host "exit=$c3"
+          Write-Host $out3
           Pop-Location
-          if ($code -ne 0) { throw "workflow pack:toolpkg failed with exit $code" }
+          if ($c3 -ne 0) { throw "build:web failed ($c3)" }
+          Write-Host 'ALL THREE STEPS PASSED'
       - name: Check build environment
         shell: pwsh
         run: python tools/build_scripts/check_build_environment.py --products app --github-runner
