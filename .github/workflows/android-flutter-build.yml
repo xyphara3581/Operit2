@@ -95,6 +95,34 @@ jobs:
         with:
           node-version: 24
 
+      - name: Enable Corepack pnpm shim
+        shell: pwsh
+        run: |
+          corepack enable pnpm
+          $enableCode = $LASTEXITCODE
+          if ($enableCode -ne 0) { throw "corepack enable pnpm failed with exit $enableCode" }
+
+          corepack prepare pnpm@10.7.0 --activate
+          $prepareCode = $LASTEXITCODE
+          if ($prepareCode -ne 0) { throw "corepack prepare pnpm@10.7.0 failed with exit $prepareCode" }
+
+          $pnpmPath = Get-Command pnpm -ErrorAction SilentlyContinue
+          if ($null -eq $pnpmPath) { throw "pnpm is still not discoverable after Corepack activation" }
+          Write-Host "PowerShell pnpm path: $($pnpmPath.Source)"
+
+          $psVersion = (& pnpm --version | Out-String).Trim()
+          $psCode = $LASTEXITCODE
+          if ($psCode -ne 0) { throw "PowerShell pnpm --version failed with exit $psCode" }
+          Write-Host "PowerShell pnpm version: $psVersion"
+
+          $cmdVersion = (& cmd.exe /d /c "pnpm --version" | Out-String).Trim()
+          $cmdCode = $LASTEXITCODE
+          if ($cmdCode -ne 0) { throw "cmd.exe cannot resolve pnpm (exit $cmdCode)" }
+          Write-Host "cmd.exe pnpm version: $cmdVersion"
+          if ($psVersion -ne "10.7.0" -or $cmdVersion -ne "10.7.0") {
+            throw "Expected pnpm 10.7.0; got PowerShell='$psVersion', cmd.exe='$cmdVersion'"
+          }
+
       - name: Install Java
         uses: actions/setup-java@v4
         with:
