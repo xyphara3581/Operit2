@@ -127,7 +127,7 @@ jobs:
               raise SystemExit("v8-152.2.0 source was not downloaded by cargo fetch")
           build_rs = Path(roots[0]) / "build.rs"
           source = build_rs.read_text()
-          needle = "fn run_gn_gen(gn_args: &[String]) {\\n  let dirs = get_dirs();\\n"
+          needle = "fn run_gn_gen(gn_args: &[String]) {\n  let dirs = get_dirs();\n"
           if needle not in source:
               raise SystemExit("Could not find rusty_v8 GN generation hook to patch")
           patch = """  let gclient_args_path = dirs.root.join("build/config/gclient_args.gni");
