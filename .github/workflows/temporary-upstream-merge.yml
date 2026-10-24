@@ -25,16 +25,81 @@ jobs:
           ref: agent/upstream-sync-shell-refresh-perf-20261024
           fetch-depth: 0
 
-      - name: Merge upstream main without overwriting local fixes
+      - name: Merge upstream and resolve only the known MNN CMake overlap
         shell: bash
         run: |
           set -euo pipefail
+          target='core/crates/provider/local-model/native/CMakeLists.txt'
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/AAswordman/Operit2.git
           git fetch upstream main
-          echo "Integration branch before merge: $(git rev-parse HEAD)"
-          echo "Upstream main: $(git rev-parse upstream/main)"
-          git merge --no-edit --no-ff upstream/main
-          echo "Merge completed: $(git rev-parse HEAD)"
+
+          if ! git merge --no-edit --no-ff upstream/main; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            printf 'Merge conflicts:\n%s\n' "${conflicts[@]}"
+            if [ "${#conflicts[@]}" -ne 1 ] || [ "${conflicts[0]}" != "$target" ]; then
+              echo 'Unexpected conflict set; aborting without pushing.'
+              git merge --abort
+              exit 1
+            fi
+
+            # Keep our tested MNN OBJECT-library workaround, then retain upstream's
+            # GCC 16 strict-ANSI patch and Windows DLL/runtime boundary.
+            git checkout --ours -- "$target"
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("core/crates/provider/local-model/native/CMakeLists.txt")
+          text = path.read_text()
+
+          old_fetch = """FetchContent_Declare(mnn URL https://codeload.github.com/alibaba/MNN/zip/refs/tags/3.6.1
+              URL_HASH SHA256=93d60848879e68be554c247afe376657630a30652a7d8ec713e9e7d1bbf69260)"""
+          new_fetch = """FetchContent_Declare(mnn URL https://codeload.github.com/alibaba/MNN/zip/refs/tags/3.6.1
+              URL_HASH SHA256=93d60848879e68be554c247afe376657630a30652a7d8ec713e9e7d1bbf69260
+              PATCH_COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_LIST_DIR}/PatchMnnStrictAnsi.cmake)"""
+          if old_fetch not in text:
+              raise SystemExit("Could not find the expected MNN FetchContent declaration")
+          text = text.replace(old_fetch, new_fetch, 1)
+
+          old_target = """add_library(operit_local_llm STATIC inference.cpp)
+          target_include_directories(operit_local_llm PRIVATE
+              ${llama_SOURCE_DIR}/include
+              ${mnn_SOURCE_DIR}/include
+              ${mnn_SOURCE_DIR}/transformers/llm/engine/include
+              ${mnn_SOURCE_DIR}/apps/frameworks/3rd_party/include)
+          target_link_libraries(operit_local_llm PRIVATE llama MNN)
+          """
+          new_target = """# Windows uses a DLL boundary to isolate its C++ runtime from V8.
+          if(WIN32)
+              add_library(operit_local_llm SHARED inference.cpp)
+              target_link_libraries(operit_local_llm PRIVATE advapi32)
+              set_target_properties(operit_local_llm PROPERTIES
+                  RUNTIME_OUTPUT_DIRECTORY "$<1:${OPERIT_LOCAL_LLM_RUNTIME_DIR}>")
+          else()
+              add_library(operit_local_llm STATIC inference.cpp)
+          endif()
+          include(GenerateExportHeader)
+          generate_export_header(operit_local_llm)
+          target_include_directories(operit_local_llm PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+          target_include_directories(operit_local_llm PRIVATE
+              ${llama_SOURCE_DIR}/include
+              ${mnn_SOURCE_DIR}/include
+              ${mnn_SOURCE_DIR}/transformers/llm/engine/include
+              ${mnn_SOURCE_DIR}/apps/frameworks/3rd_party/include)
+          target_link_libraries(operit_local_llm PRIVATE llama MNN)
+          """
+          if old_target not in text:
+              raise SystemExit("Could not find the expected local inference target block")
+          path.write_text(text.replace(old_target, new_target, 1))
+          PY
+            git add "$target"
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              echo 'Unresolved conflicts remain; aborting without pushing.'
+              git merge --abort
+              exit 1
+            fi
+            git commit -m "Merge upstream main and preserve local Android build workaround"
+          fi
+
           git push origin HEAD:refs/heads/agent/upstream-sync-shell-refresh-perf-20261024
