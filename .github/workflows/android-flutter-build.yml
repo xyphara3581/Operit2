@@ -77,7 +77,6 @@ jobs:
     env:
       V8_FROM_SOURCE: "1"
       LIBCLANG_PATH: /usr/lib/llvm-21/lib
-      EXTRA_GN_ARGS: 'android_ndk_version="r26c"'
       CARGO_TARGET_DIR: ${{ github.workspace }}/target/rusty-v8-android-source
 
     steps:
@@ -118,6 +117,29 @@ jobs:
           cat > .ci-tools/rusty-v8-android/src/main.rs <<'EOF'
           fn main() {}
           EOF
+          cargo fetch --manifest-path .ci-tools/rusty-v8-android/Cargo.toml
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import glob
+          roots = glob.glob(os.path.expanduser("~/.cargo/registry/src/*/v8-152.2.0"))
+          if not roots:
+              raise SystemExit("v8-152.2.0 source was not downloaded by cargo fetch")
+          build_file = Path(roots[0]) / "build/config/android/BUILD.gn"
+          if not build_file.is_file():
+              raise SystemExit(f"Expected Android GN file not found: {build_file}")
+          source = build_file.read_text()
+          import_line = 'import("//build/config/gclient_args.gni")'
+          if import_line not in source:
+              android_config = 'import("//build/config/android/config.gni")'
+              if android_config not in source:
+                  raise SystemExit("Cannot safely patch Android GN imports: config.gni import missing")
+              source = source.replace(android_config, android_config + "\\n" + import_line, 1)
+              build_file.write_text(source)
+              print("Patched missing gclient_args.gni import for android_ndk_version")
+          else:
+              print("gclient_args.gni import already present")
+          PY
           cargo build --manifest-path .ci-tools/rusty-v8-android/Cargo.toml --target aarch64-linux-android --release
           build_root="$CARGO_TARGET_DIR/aarch64-linux-android/release/gn_out"
           lib="$build_root/obj/librusty_v8.a"
