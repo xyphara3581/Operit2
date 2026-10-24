@@ -136,11 +136,31 @@ jobs:
             gclient_args.push_str("\\ndeclare_args() {\\n  android_ndk_version = \\"2@30.0.16248370\\"\\n}\\n");
             fs::write(&gclient_args_path, gclient_args).expect("failed to provide android_ndk_version to GN");
           }
-          let pydeps_file = dirs.root.join("build/android/pylib/results/presentation/test_results_presentation.pydeps");
-          if !pydeps_file.exists() {
-            fs::create_dir_all(pydeps_file.parent().unwrap()).expect("failed to create Android pydeps directory");
-            fs::write(&pydeps_file, "").expect("failed to provide Android test pydeps placeholder");
+          // The crates.io V8 source archive omits generated Python dependency manifests
+          // referenced by Chromium GN files. Create empty placeholders for literal pydeps_file
+          // entries so GN generation can proceed; these manifests are build metadata, not sources.
+          let mut missing_pydeps = 0usize;
+          for entry in walkdir::WalkDir::new(&dirs.root).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() || entry.path().extension().and_then(|x| x.to_str()) != Some("gn") {
+              continue;
+            }
+            let Ok(gn_source) = fs::read_to_string(entry.path()) else { continue; };
+            for line in gn_source.lines() {
+              let line = line.trim();
+              let Some((_, rhs)) = line.split_once("pydeps_file =") else { continue; };
+              let relative = rhs.trim().trim_matches('"').trim_matches('\\'');
+              if !relative.ends_with(".pydeps") || relative.contains("$") { continue; }
+              let path = entry.path().parent().unwrap().join(relative);
+              if !path.exists() {
+                if let Some(parent) = path.parent() {
+                  fs::create_dir_all(parent).expect("failed to create pydeps parent directory");
+                }
+                fs::write(&path, "").expect("failed to create missing pydeps placeholder");
+                missing_pydeps += 1;
+              }
+            }
           }
+          println!("Created {missing_pydeps} missing generated pydeps placeholders");
           """
           source = source.replace(needle, needle + patch, 1)
           build_rs.write_text(source)
