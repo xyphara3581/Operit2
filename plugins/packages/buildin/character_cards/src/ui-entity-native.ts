@@ -372,6 +372,9 @@ function renderNativeEntity(ctx: ComposeDslContext, input: NativeEntityInput, li
         pages[0].push(...renderEntityPreview(ctx, { card: draft, group: null, snapshot, tags: state.tags, avatar: state.avatar, themes: state.themes,
           themeError: state.themeError, configurationExpanded: state.previewConfigurationExpanded, onToggleConfiguration: togglePreviewConfiguration }));
       } else {
+        // Keep the current page and its immediate neighbors warm for pager gestures.
+        // The bindings page is the most expensive and is skipped on initial entry.
+        if (state.tab < 2) {
         pages[0].push(field("name", "角色名称", draft.name, name => changeCard({ name })), field("description", "描述", draft.description, description => changeCard({ description })),
           ctx.UI.Box({ fillMaxWidth: true, paddingBottom: 12 }, ctx.UI.InputDecorator({ label: "角色头像", enabled }, ctx.UI.Row({ fillMaxWidth: true, verticalAlignment: "center" }, [
             ctx.UI.Image({ key: "entity-edit-avatar", ...(draft.avatarUri === null ? { path: state.avatar ?? undefined } : { uri: draft.avatarUri }), width: 44, height: 44, contentScale: "crop", contentDescription: "角色头像", modifier: ctx.Modifier.clip({ type: "circle" }) }), ctx.UI.Spacer({ width: 12 }), ctx.UI.Text({ text: draft.avatarUri ?? "未设置", style: "bodyMedium", weight: 1, maxLines: 1, overflow: "ellipsis" }), ctx.UI.Spacer({ width: 8 }), standardButton("entity-choose-avatar", "选择", chooseAvatar),
@@ -382,7 +385,9 @@ function renderNativeEntity(ctx: ComposeDslContext, input: NativeEntityInput, li
             state.tags.length === 0 ? caption("暂无提示词标签") : ctx.UI.FlowRow({ spacing: 8, runSpacing: 8 }, state.tags.map(tag => ctx.UI.FilterChip({ key: "entity-tag-" + tag.id, selected: draft.attachedTagIds.includes(tag.id), enabled, label: ctx.UI.Text({ text: tag.name, maxLines: 1, overflow: "ellipsis", modifier: ctx.Modifier.widthIn({ maxWidth: 160 }) }), onClick: () => { assertOwner(); changeCard({ attachedTagIds: card().attachedTagIds.includes(tag.id) ? card().attachedTagIds.filter(id => id !== tag.id) : [...card().attachedTagIds, tag.id] }); } }))),
           ]),
         );
+        }
         for (const [key, label, lines] of [["otherContentChat", "聊天附加内容", 4], ["otherContentVoice", "语音附加内容", 4], ["advancedCustomPrompt", "高级自定义 Prompt", 4], ["marks", "备注", 3]] as const) pages[1].push(field(key, label, draft[key], value => changeCard({ [key]: value }), lines));
+        if (state.tab > 0) {
         const modelStatus = characterModelBindingStatus(draft, snapshot.models);
         const tts = snapshot.ttsConfigs.find(config => config.id === draft.ttsConfigId);
         const policy = draft.toolAccessConfig, count = policy.allowedBuiltinTools.length + policy.allowedPackages.length + policy.allowedSkills.length + policy.allowedMcpServers.length;
@@ -400,6 +405,7 @@ function renderNativeEntity(ctx: ComposeDslContext, input: NativeEntityInput, li
         // References introduced by the plugin stay visible, without replacing main's sections.
         if (draft.sharedMemoryMounts.length !== 0) pages[2].push(section("共享记忆挂载", JSON.stringify(draft.sharedMemoryMounts, null, 2)));
         if (state.themeError !== "") pages[2].push(ctx.UI.Text({ text: state.themeError, color: colors.error }), standardButton("entity-theme-retry", "重新加载主题", async () => { await act(loadThemes); }));
+        }
       }
     } else if (state.group !== null && state.snapshot !== null) {
       const draft = state.group, snapshot = state.snapshot;
