@@ -43,7 +43,8 @@ Router 负责目标选择、Space 权限和转发。Peer runtime 负责身份、
 
 `operit-proxy-edge` 提供类型化服务投影，地址由 `operit-edge-contract` 共享。
 完整 CoreNode 拥有身份、Space、持久化及 Agent/Chat 运行时；Edge 提供设备服务及
-相应的 Space 控制能力，不等同于完整 CoreNode。
+相应的 Space 控制能力，不等同于完整 CoreNode。设备原生业务、配置与宿主插件的
+职责见 [Edge 架构](edge-architecture.md)。
 
 ## 2. 标准 Link 的三个操作族
 
@@ -74,8 +75,9 @@ CoreLinkResponse::Push(Opened | ItemAccepted | Closed，或错误)
 服务输入方法使用 `Target` 路由，因此上传等服务保留自身标准对象地址和权限检查。
 `NodeClient` 使用明确目标节点的相同 Push 路径。
 
-当前 Edge 服务没有声明输入流方法，其 Push 返回标准 method-not-found 错误。
-这是服务能力限制；transport 本身可以承载 Push。
+Edge 应用可以通过原生端点声明 Watch / Stream 和 Push / ReverseStream，
+当前固件与模拟器使用 `withStreamHandlers` 注册设备语音协议。没有注册对应输入端点时，
+Push 返回标准 method-not-found 错误；不能从某个服务不支持 Push 推断 transport 不支持。
 
 ## 3. 配对和会话控制
 

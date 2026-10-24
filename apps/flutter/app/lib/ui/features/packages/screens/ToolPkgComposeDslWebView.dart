@@ -2,7 +2,6 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
@@ -63,6 +62,20 @@ class ComposeDslWebViewHostContext {
 
   /// Observes action results only after the WebView receives its bridge response.
   final ValueChanged<Object?>? onActionResultDelivered;
+
+  /// Binds blocking actions to an occurrence while preserving its host services and result observer.
+  ComposeDslWebViewHostContext withActionDispatcher(
+    ComposeDslWebViewActionDispatcher dispatcher,
+  ) => ComposeDslWebViewHostContext(
+    clients: clients,
+    packageName: packageName,
+    routeInstanceId: routeInstanceId,
+    executionContextKey: executionContextKey,
+    dispatchAction: dispatcher,
+    runtimeOptionsProvider: runtimeOptionsProvider,
+    readFileBytes: readFileBytes,
+    onActionResultDelivered: onActionResultDelivered,
+  );
 
   /// Executes an action while retaining errors for the requesting WebView.
   Future<ComposeDslWebViewBlockingActionResult> executeAction({

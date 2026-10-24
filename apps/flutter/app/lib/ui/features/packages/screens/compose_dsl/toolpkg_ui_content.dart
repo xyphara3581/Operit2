@@ -15,7 +15,7 @@ class ToolPkgUiContent {
   const ToolPkgUiContent._({required this.body, required this.sliver});
 
   /// Keeps a live renderer mounted while presenting action errors in either layout.
-  ToolPkgUiContent._compose(_ComposeDslRenderer renderer, Widget? errorView)
+  ToolPkgUiContent._compose(_ComposeProgramExecutor renderer, Widget? errorView)
     : this._(
         body: Stack(
           children: [

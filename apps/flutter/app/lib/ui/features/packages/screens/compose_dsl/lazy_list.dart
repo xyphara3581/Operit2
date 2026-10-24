@@ -108,7 +108,7 @@ class _ComposeLazyList extends StatefulWidget {
   final bool autoScrollToEnd;
   final double spacing;
   final Alignment alignment;
-  final List<_ComposeDslNode> nodes;
+  final List<_ComposeProgramNode> nodes;
   final _ComposeLazyWindow? window;
   final Future<Object?> Function(String, [Object?]) onAction;
   final IndexedWidgetBuilder itemBuilder;

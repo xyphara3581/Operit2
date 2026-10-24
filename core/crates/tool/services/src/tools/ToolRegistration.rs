@@ -1419,7 +1419,7 @@ fn registerFileSystemTools(handler: &mut AIToolHandler, fileSystemTools: Standar
     handler.registerBuiltinTool(
         BuiltinToolName::ApplyFile,
         RegisteredToolExecutor::Asynchronous(Box::new(FileSystemToolExecutor {
-            tools: fileSystemTools,
+            tools: fileSystemTools.clone(),
             operation: FileSystemToolOperation::ApplyFile,
         })),
         ToolRegistrationVisibility::INTERNAL,
@@ -1429,7 +1429,37 @@ fn registerFileSystemTools(handler: &mut AIToolHandler, fileSystemTools: Standar
         RegisteredToolExecutor::Shared(Arc::new(StorageToolExecutor)),
         ToolRegistrationVisibility::INTERNAL,
     );
+    registerFileTransferTools(handler, &fileSystemTools);
 
+}
+
+/// Registers the internal cross-node transfer endpoints. They are transport
+/// plumbing for `node:` copies and never appear in any model-facing catalog.
+#[allow(non_snake_case)]
+fn registerFileTransferTools(
+    handler: &mut AIToolHandler,
+    fileSystemTools: &StandardFileSystemTools,
+) {
+    use crate::tools::transfer::FileTransferTools::{
+        FileTransferExecutor, FileTransferOperation, FS_PUSH_FILE_TOOL, FS_READ_CHUNK_TOOL,
+        FS_TRANSFER_BEGIN_TOOL, FS_TRANSFER_CHUNK_TOOL, FS_TRANSFER_COMMIT_TOOL,
+    };
+    let endpoints = [
+        (FS_TRANSFER_BEGIN_TOOL, FileTransferOperation::Begin),
+        (FS_TRANSFER_CHUNK_TOOL, FileTransferOperation::Chunk),
+        (FS_TRANSFER_COMMIT_TOOL, FileTransferOperation::Commit),
+        (FS_READ_CHUNK_TOOL, FileTransferOperation::ReadChunk),
+        (FS_PUSH_FILE_TOOL, FileTransferOperation::PushFile),
+    ];
+    for (name, operation) in endpoints {
+        handler.registerInternalAsyncTool(
+            name.to_string(),
+            Box::new(FileTransferExecutor {
+                tools: fileSystemTools.clone(),
+                operation,
+            }),
+        );
+    }
 }
 
 #[allow(non_snake_case)]
@@ -1440,6 +1470,8 @@ fn registerFileSystemTool(
     name: BuiltinToolName,
     operation: FileSystemToolOperation,
 ) {
+    // File tools own an asynchronous execution contract: qualified `node:` paths
+    // dispatch to the target device through the device-tool transport.
     handler.registerBuiltinTool(
         name,
         RegisteredToolExecutor::Asynchronous(Box::new(FileSystemToolExecutor {

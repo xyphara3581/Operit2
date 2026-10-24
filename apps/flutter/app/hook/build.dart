@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:hooks/hooks.dart';
 
+import 'dependency_files.dart';
 import 'verified_asset_download.dart';
 
 const String _v86PackageVersion = '0.5.424';
@@ -211,6 +212,7 @@ class _V86GuestAsset {
   final String sha256;
 }
 
+/// Registers source dependencies after pruning package and generated directories.
 Future<void> _addDirectoryFileDependencies(
   BuildOutputBuilder output,
   Directory root,
@@ -220,16 +222,15 @@ Future<void> _addDirectoryFileDependencies(
   if (!root.existsSync()) {
     throw StateError('Dependency root does not exist: ${root.path}');
   }
-  await for (final entity in root.list(recursive: true, followLinks: false)) {
-    if (entity is! File) {
-      continue;
-    }
+  await for (final entity in dependencyFiles(
+    root,
+    excludedDirectoryNames: {
+      'target',
+      'node_modules',
+      if (excludeGeneratedOutputs) '.out',
+    },
+  )) {
     final path = entity.path;
-    if (path.contains(
-      '${Platform.pathSeparator}node_modules${Platform.pathSeparator}',
-    )) {
-      continue;
-    }
     if (excludeGeneratedOutputs && _isGeneratedInputDependency(entity)) {
       continue;
     }
@@ -241,14 +242,7 @@ Future<void> _addDirectoryFileDependencies(
 
 /// Detects build-owned outputs that must not be registered as hook inputs.
 bool _isGeneratedInputDependency(File file) {
-  final path = file.path;
-  final separator = Platform.pathSeparator;
-  if (path.contains('$separator.out$separator')) {
-    return true;
-  }
-  final fileName = file.uri.pathSegments.isEmpty
-      ? path
-      : file.uri.pathSegments.last;
+  final fileName = file.uri.pathSegments.last;
   if (fileName == '.sync_state.json' ||
       fileName == '.sync_hot_reload_state.json') {
     return true;
@@ -278,6 +272,7 @@ Future<void> _compileWebRuntimeBridge(
   ], workingDirectory: workingDirectory.path);
 }
 
+/// Registers Rust source inputs without entering Cargo build output trees.
 Future<void> _addRustDependencies(
   BuildOutputBuilder output,
   Directory root,
@@ -285,19 +280,14 @@ Future<void> _addRustDependencies(
   if (!root.existsSync()) {
     throw StateError('Rust dependency root does not exist: ${root.path}');
   }
-  await for (final entity in root.list(recursive: true, followLinks: false)) {
-    if (entity is! File) {
-      continue;
-    }
-    final path = entity.path;
-    if (path.contains(
-      '${Platform.pathSeparator}target${Platform.pathSeparator}',
-    )) {
-      continue;
-    }
-    if (path.endsWith('.rs') ||
-        path.endsWith('Cargo.toml') ||
-        path.endsWith('Cargo.lock')) {
+  await for (final entity in dependencyFiles(
+    root,
+    excludedDirectoryNames: const {'target'},
+  )) {
+    final fileName = entity.uri.pathSegments.last;
+    if (fileName.endsWith('.rs') ||
+        fileName == 'Cargo.toml' ||
+        fileName == 'Cargo.lock') {
       output.dependencies.add(entity.uri);
     }
   }

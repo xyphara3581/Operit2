@@ -24,7 +24,7 @@ use operit_host_api::HostManager::{
 use operit_host_api::TimeUtils::currentTimeMillis;
 use operit_host_api::{HostRuntimeEventRegistration, HostRuntimeTaskSchedulerHost};
 #[cfg(feature = "javascript")]
-use operit_js_bridge::javascript::JsExecutionProvider::QuickJsExecutionProvider;
+use operit_js_bridge::javascript::JsExecutionProvider::HostJsExecutionProvider;
 use operit_providers::chat::llmprovider::ModelConfigConnectionTester::ModelConnectionTestReport;
 use operit_providers::runtime_support::ProviderRuntimeContext;
 use operit_store::sync::SqlChatSyncStore::{SqlChatSyncStore, CHAT_SYNC_DOMAIN};
@@ -204,7 +204,7 @@ impl OperitApplication {
         #[cfg(feature = "javascript")]
         let toolRuntimeDependencies = ToolRuntimeDependencies::new(
             runtimeToolSupport.clone(),
-            Arc::new(QuickJsExecutionProvider::new()),
+            Arc::new(HostJsExecutionProvider::new()),
         );
         let toolHandler = AIToolHandler::new(hostManager.clone(), toolRuntimeDependencies.clone());
         let toolPkgBridgeRuntime =

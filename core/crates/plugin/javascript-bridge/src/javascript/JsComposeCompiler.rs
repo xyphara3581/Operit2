@@ -114,7 +114,7 @@ impl ComposeCompiler {
         let owner = host.clone();
         let state = host.createHostJavaScriptRuntimeState("ComposeCompiler", operit_host_api::HostJavaScriptRuntimeStateKind::Compilation, Box::new(move || {
             let mut runtime = owner.createHostJavaScriptRuntime()?;
-            runtime.registerHostJavaScriptJsonFunction("__operitReadComposeParserSource", Arc::new(|arguments| {
+            runtime.registerHostJavaScriptFunction("__operitReadComposeParserSource", Arc::new(|arguments| {
                 if !arguments.is_empty() { return Err(HostError::new("Parser source takes no arguments")); }
                 Ok(Value::String(readComposeDslParserSource().to_owned()))
             }))?;
@@ -195,7 +195,7 @@ mod tests {
             .prepare(source.into(), "pkg:screen".into())
             .unwrap();
         assert!(!first.cache_hit);
-        assert!(first.script.contains("OperitComposeGeneration"));
+        assert!(first.script.contains("__operitUiPrograms_"));
         let repeated = compiler
             .prepare(source.into(), "pkg:screen".into())
             .unwrap();

@@ -1,15 +1,17 @@
+import 'package:operit2/core/compose/compose_program_buffer.dart' as compose_buffer;
+import 'support/compose_program_fixture.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:operit2/core/proxy/generated/CoreProxyModels.g.dart' as core;
 import 'package:operit2/ui/features/packages/screens/ToolPkgComposeDslWebView.dart';
 import 'package:operit2/ui/features/packages/screens/ToolPkgUiLauncherScreen.dart';
 
-core.ToolPkgComposeDslNodeRecord record(
+compose_buffer.ToolPkgComposeDslInstance record(
   String id,
   String type,
   Map<String, Object?> props, [
   List<String> children = const [],
-]) => core.ToolPkgComposeDslNodeRecord(
+]) => composeTestInstance(
   id: id,
   nodeType: type,
   props: props,
@@ -17,15 +19,16 @@ core.ToolPkgComposeDslNodeRecord record(
   slots: const {},
 );
 
+/// Runs native layout and lifetime regressions against program transactions.
 void main() {
-  testWidgets('retained Box updates cached hit order and child alignment', (
+  testWidgets('program Box updates cached hit order and child alignment', (
     tester,
   ) async {
     final actions = <String>[];
-    late void Function(core.ToolPkgComposeDslNodeUpdate) apply;
+    late void Function(core.ToolPkgComposeDslTransaction) apply;
     late VoidCallback dispose;
     var revision = 1;
-    core.ToolPkgComposeDslNodeRecord tile(String id, int z, [String? align]) =>
+    compose_buffer.ToolPkgComposeDslInstance tile(String id, int z, [String? align]) =>
         record(
           id,
           'Box',
@@ -54,12 +57,12 @@ void main() {
       {'width': 200, 'height': 200},
       ['a', 'b'],
     );
-    final child = buildRetainedComposeDslLayoutForTest(
-      update: core.ToolPkgComposeDslNodeUpdate(
+    final child = buildComposeProgramLayoutForTest(
+      update: composeTestTransaction(
         reset: true,
         revision: revision,
-        rootId: 'root',
-        upserts: [
+        rootInstanceId: 'root',
+        instances: [
           root,
           tile('a', 0),
           tile('b', 1),
@@ -94,11 +97,11 @@ void main() {
     expect(actions, ['b']);
     for (final z in [2, -1, 3]) {
       apply(
-        core.ToolPkgComposeDslNodeUpdate(
+        composeTestTransaction(
           reset: false,
           revision: ++revision,
-          rootId: 'root',
-          upserts: [tile('a', z)],
+          rootInstanceId: 'root',
+          instances: [tile('a', z)],
           removed: const [],
         ),
       );
@@ -107,11 +110,11 @@ void main() {
       expect(actions.last, z > 1 ? 'a' : 'b');
     }
     apply(
-      core.ToolPkgComposeDslNodeUpdate(
+      composeTestTransaction(
         reset: false,
         revision: ++revision,
-        rootId: 'root',
-        upserts: [tile('a', 3, 'bottomEnd')],
+        rootInstanceId: 'root',
+        instances: [tile('a', 3, 'bottomEnd')],
         removed: const [],
       ),
     );
@@ -122,12 +125,12 @@ void main() {
     await tester.tapAt(origin + const Offset(150, 150));
     expect(actions.last, 'a');
     apply(
-      core.ToolPkgComposeDslNodeUpdate(
+      composeTestTransaction(
         reset: false,
         revision: ++revision,
-        rootId: 'root',
-        upserts: [
-          record('root', 'Box', root.props, ['a']),
+        rootInstanceId: 'root',
+        instances: [
+          record('root', 'Box', (root.values[0] as Map).cast<String, Object?>(), ['a']),
         ],
         removed: const ['b', 'b-label'],
       ),

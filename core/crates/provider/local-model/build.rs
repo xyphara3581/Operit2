@@ -1,3 +1,4 @@
+/// Builds native inference engines with an isolated Windows C++ runtime boundary.
 fn main() {
     println!("cargo:rerun-if-changed=native");
     println!("cargo:rerun-if-env-changed=OPERIT_LLAMA_SOURCE");
@@ -76,16 +77,31 @@ fn main() {
                 .define("OHOS_ARCH", abi)
                 .define("OHOS_STL", "c++_static");
         }
+        let windows = os == "windows";
+        if windows {
+            let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+            let profile_dir = out_dir
+                .ancestors()
+                .nth(3)
+                .expect("Cargo OUT_DIR must be under the profile build directory");
+            // Place the runtime DLL beside Cargo's executable and bridge artifacts.
+            config.define("OPERIT_LOCAL_LLM_RUNTIME_DIR", profile_dir);
+        }
         let output = config.build();
         let build = output.join("build");
-        let names = [
-            "operit_local_llm",
-            "llama",
-            "ggml",
-            "ggml-cpu",
-            "ggml-base",
-            "MNN",
-        ];
+        let names: &[&str] = if windows {
+            &["operit_local_llm"]
+        } else {
+            &[
+                "operit_local_llm",
+                "llama",
+                "ggml",
+                "ggml-cpu",
+                "ggml-base",
+                "MNN",
+            ]
+        };
+        /// Locates one exact native library filename in CMake's target output.
         fn find(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
             let entries = std::fs::read_dir(dir).ok()?;
             for entry in entries.flatten() {
@@ -100,10 +116,11 @@ fn main() {
             }
             None
         }
-        let windows = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
         for name in names {
-            let file = if windows {
+            let file = if target_env == "msvc" {
                 format!("{name}.lib")
+            } else if windows {
+                format!("lib{name}.dll.a")
             } else {
                 format!("lib{name}.a")
             };
@@ -113,7 +130,11 @@ fn main() {
                 "cargo:rustc-link-search=native={}",
                 path.parent().unwrap().display()
             );
-            println!("cargo:rustc-link-lib=static={name}");
+            let kind = if windows { "dylib" } else { "static" };
+            println!("cargo:rustc-link-lib={kind}={name}");
+        }
+        if windows {
+            return;
         }
         if target_env == "ohos" {
             println!("cargo:rustc-link-lib=c++_static");
@@ -131,9 +152,6 @@ fn main() {
                 // _ZTISt13runtime_error undefined at dlopen time.
                 println!("cargo:rustc-link-lib=log");
             }
-            // ggml's Windows CPU detection reads the registry. Propagate this
-            // system dependency even when no concrete Windows host is linked.
-            "windows" => println!("cargo:rustc-link-lib=advapi32"),
             _ => {
                 println!("cargo:rustc-link-lib=stdc++");
                 println!("cargo:rustc-link-lib=pthread");

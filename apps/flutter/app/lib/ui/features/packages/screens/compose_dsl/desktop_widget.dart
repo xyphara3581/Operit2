@@ -24,7 +24,7 @@ class ToolPkgDesktopWidgetFrame {
           instanceId: instanceId,
           useEnglish: useEnglish,
         );
-    final store = _ComposeDslNodeStore()..apply(snapshot.renderUpdate);
+    final store = _ComposeProgramStore()..apply(snapshot.renderUpdate);
     return ToolPkgDesktopWidgetFrame._(
       snapshot.widget,
       _ComposeDslRenderResult(tree: store.root, actionResult: null),
@@ -50,7 +50,7 @@ class ToolPkgDesktopWidgetFrame {
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: () => openRoute('open'),
-          child: _ComposeDslRenderer(
+          child: _ComposeProgramExecutor(
             node: _render.tree,
             nodePath: 'desktop-widget:$instanceId',
             dispatchOnLoad: false,

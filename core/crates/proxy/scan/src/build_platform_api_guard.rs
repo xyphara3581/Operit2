@@ -7,8 +7,8 @@ use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 use syn::visit::Visit;
 use syn::{
-    Attribute, ExprPath, ImplItemFn, ItemConst, ItemExternCrate, ItemFn, ItemMod, ItemStatic,
-    ItemUse, ItemImpl, Lit, Meta, Path as SynPath, Token, TraitItemFn, TypePath, UseTree,
+    Attribute, ExprPath, ImplItemFn, ItemConst, ItemExternCrate, ItemFn, ItemImpl, ItemMod,
+    ItemStatic, ItemUse, Lit, Meta, Path as SynPath, Token, TraitItemFn, TypePath, UseTree,
 };
 
 use super::SourceRoot;
@@ -239,7 +239,7 @@ impl<'ast> Visit<'ast> for PlatformApiVisitor<'_> {
         syn::visit::visit_item_fn(self, item);
     }
 
-    /// Skips entire test-only or native-only implementations, including their methods.
+    /// Skips entire implementation blocks excluded from the production Wasm target.
     fn visit_item_impl(&mut self, item: &ItemImpl) {
         if is_excluded_from_wasm(&item.attrs) {
             return;
@@ -392,27 +392,71 @@ fn parse_cfg_conditions(list: &syn::MetaList) -> Option<Vec<Meta>> {
 mod tests {
     use super::*;
 
-    fn violations(source: &str) -> BTreeSet<PlatformApiViolation> {
-        let root = SourceRoot::new(PathBuf::from("src"), "test_crate");
-        let mut violations = BTreeSet::new();
-        let mut visitor = PlatformApiVisitor::new(&root, Path::new("src/test.rs"), &mut violations);
-        visitor.visit_file(&syn::parse_file(source).unwrap());
-        violations
+    /// Scans parsed fixture code using the production platform-boundary visitor.
+    fn violations(source: &str) -> Vec<String> {
+        let source_root = SourceRoot::new(PathBuf::from("fixture"), "fixture");
+        let mut result = BTreeSet::new();
+        PlatformApiVisitor::new(&source_root, Path::new("fixture.rs"), &mut result)
+            .visit_file(&syn::parse_file(source).unwrap());
+        result.into_iter().map(|violation| violation.api).collect()
     }
 
+    /// Excludes test-only and native-only implementation blocks.
     #[test]
-    fn ignores_platform_calls_in_test_only_and_native_only_impls() {
-        assert!(violations(r#"
-            #[cfg(test)] impl Storage { fn flush() { std::fs::read("fixture"); } }
+    fn excluded_implementations_do_not_violate_production_boundaries() {
+        assert!(violations(
+            r#"
+            #[cfg(test)]
+            impl TestStorage { fn read() { std::fs::read("fixture"); } }
+            #[cfg(test)]
+            impl Storage for TestStorage {
+                fn flush() { std::fs::OpenOptions::new(); }
+            }
             #[cfg(not(target_arch = "wasm32"))]
             impl NativeStorage { fn read() { std::fs::read("file"); } }
-        "#).is_empty());
+        "#
+        )
+        .is_empty());
     }
 
+    /// Keeps rejecting filesystem APIs inside production implementation blocks.
     #[test]
-    fn continues_rejecting_platform_calls_in_shared_impls() {
-        let found = violations(r#"impl Storage { fn read() { std::fs::read("file"); } }"#);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found.first().unwrap().api, "std::fs");
+    fn production_implementations_still_reject_platform_apis() {
+        assert_eq!(
+            violations(
+                r#"
+            impl Storage for ProductionStorage {
+                fn flush() { std::fs::OpenOptions::new(); }
+            }
+        "#
+            ),
+            vec!["std::fs"]
+        );
+        assert_eq!(
+            violations(
+                r#"
+            #[cfg(not(test))]
+            impl ProductionStorage { fn read() { std::fs::read("fixture"); } }
+        "#
+            ),
+            vec!["std::fs"]
+        );
+    }
+
+    /// Retains attribute handling for individual methods within a production impl.
+    #[test]
+    fn test_only_methods_do_not_hide_live_methods() {
+        assert_eq!(
+            violations(
+                r#"
+            impl Storage {
+                #[cfg(test)]
+                fn fixture() { std::fs::read("fixture"); }
+                fn connect() { std::net::TcpStream::connect("localhost:1"); }
+            }
+        "#
+            ),
+            vec!["std::net"]
+        );
     }
 }

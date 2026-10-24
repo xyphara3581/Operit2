@@ -136,6 +136,8 @@ foreach(OPERIT_NATIVE_SOURCE_ROOT IN LISTS OPERIT_NATIVE_SOURCE_ROOTS)
     "${OPERIT_NATIVE_SOURCE_ROOT}/*.c"
     "${OPERIT_NATIVE_SOURCE_ROOT}/*.cc"
     "${OPERIT_NATIVE_SOURCE_ROOT}/*.cpp"
+    "${OPERIT_NATIVE_SOURCE_ROOT}/*.cmake"
+    "${OPERIT_NATIVE_SOURCE_ROOT}/CMakeLists.txt"
     "${OPERIT_NATIVE_SOURCE_ROOT}/*.h"
     "${OPERIT_NATIVE_SOURCE_ROOT}/*.hh"
     "${OPERIT_NATIVE_SOURCE_ROOT}/*.hpp"
@@ -156,11 +158,14 @@ file(GLOB_RECURSE OPERIT_PLUGIN_ASSET_INPUTS CONFIGURE_DEPENDS
 list(APPEND OPERIT_NATIVE_INPUTS ${OPERIT_PLUGIN_ASSET_INPUTS})
 set(OPERIT_FLUTTER_BRIDGE_OUTPUT_DLL
   "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/operit_flutter_bridge.dll")
+set(OPERIT_LOCAL_LLM_OUTPUT_DLL
+  "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/operit_local_llm.dll")
 set(OPERIT_FLUTTER_BRIDGE_STAMP
   "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/operit_flutter_bridge-$<CONFIG>.stamp")
 add_custom_command(
   OUTPUT
     "${OPERIT_FLUTTER_BRIDGE_OUTPUT_DLL}"
+    "${OPERIT_LOCAL_LLM_OUTPUT_DLL}"
     "${OPERIT_FLUTTER_BRIDGE_STAMP}"
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles"
   COMMAND ${CMAKE_COMMAND}
@@ -186,10 +191,13 @@ add_custom_command(
 add_custom_target(operit_flutter_bridge
   DEPENDS
     "${OPERIT_FLUTTER_BRIDGE_OUTPUT_DLL}"
+    "${OPERIT_LOCAL_LLM_OUTPUT_DLL}"
     "${OPERIT_FLUTTER_BRIDGE_STAMP}"
 )
 add_dependencies(operit_flutter_bridge sync_operit_plugins)
 add_dependencies(${BINARY_NAME} operit_flutter_bridge)
 
 # Run the Flutter tool portions of the build. This must not be removed.
+# Rust's build script generates the Dart proxy contract consumed by assembly.
+add_dependencies(flutter_assemble operit_flutter_bridge)
 add_dependencies(${BINARY_NAME} flutter_assemble)

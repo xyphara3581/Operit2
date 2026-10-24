@@ -640,7 +640,7 @@ pub trait JsExecutionEngine: Send + Sync {
         runtime_options: BTreeMap<String, Value>,
         env_overrides: BTreeMap<String, String>,
         text_resources: Arc<BTreeMap<String, String>>,
-        on_response: Arc<dyn Fn(Value) + Send + Sync>,
+        on_response: Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>,
     ) -> JsExecutionFuture<JsExecutionResult<Option<Value>>>;
 
     /// Dispatches one Compose DSL action without blocking the caller runtime.
@@ -650,7 +650,7 @@ pub trait JsExecutionEngine: Send + Sync {
         payload: Option<Value>,
         runtime_options: BTreeMap<String, Value>,
         env_overrides: BTreeMap<String, String>,
-        on_intermediate_result: Arc<dyn Fn(Value) + Send + Sync>,
+        on_intermediate_result: Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>,
     ) -> JsExecutionFuture<JsExecutionResult<Option<Value>>>;
 
     /// Destroys any engine resources owned by this handle.

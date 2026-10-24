@@ -250,51 +250,68 @@
     });
 
     var originalThen = Promise.prototype.then;
-    /** Captures subscription ownership even after that call's session was cancelled. */
+    /** Retains each subscribed reaction until delivery under its exact execution owner. */
     Promise.prototype.then = function(onFulfilled, onRejected) {
         var ownerCallId = normalizeCallId(root.__operitCurrentCallId);
         if (!ownerCallId) {
             return originalThen.call(this, onFulfilled, onRejected);
         }
-        /** Runs each continuation under its subscribing call's exact identity. */
-        function bindContinuation(handler) {
-            if (typeof handler !== 'function') return handler;
-            /** Isolates cancelled callbacks from the surrounding live runtime. */
+        retainCallReference(ownerCallId);
+        var retained = true;
+        /** Releases this subscription once, including rejected and invalid-receiver paths. */
+        function releaseSubscription() {
+            if (!retained) return;
+            retained = false;
+            releaseCallReference(ownerCallId);
+        }
+        /** Preserves normal Promise forwarding while restoring the subscribing call's identity. */
+        function bindContinuation(handler, rejected) {
+            /** Isolates cancelled callbacks and releases their pending reaction ownership. */
             return function(value) {
-                var ownerState = getCallState(ownerCallId);
-                var previousCallId = normalizeCallId(root.__operitCurrentCallId);
-                if (!ownerState) {
-                    root.__operitCurrentCallId = ownerCallId;
-                    root.__operitNativeActivateCall(ownerCallId, true);
-                    var cancelledActivation = callActivationSequence;
-                    delete root.__operit_call_runtime_ref;
-                    try { return handler(value); }
-                    finally {
-                        if (normalizeCallId(root.__operitCurrentCallId) === ownerCallId &&
-                            callActivationSequence === cancelledActivation) {
-                            restoreCallContext(previousCallId);
+                try {
+                    if (typeof handler !== 'function') {
+                        if (rejected) throw value;
+                        return value;
+                    }
+                    var ownerState = getCallState(ownerCallId);
+                    var previousCallId = normalizeCallId(root.__operitCurrentCallId);
+                    if (!ownerState) {
+                        var cancelledActivation = callActivationSequence;
+                        try {
+                            root.__operitCurrentCallId = ownerCallId;
+                            root.__operitNativeActivateCall(ownerCallId, true);
+                            delete root.__operit_call_runtime_ref;
+                            return handler(value);
+                        } finally {
+                            if (normalizeCallId(root.__operitCurrentCallId) === ownerCallId &&
+                                callActivationSequence === cancelledActivation) {
+                                restoreCallContext(previousCallId);
+                            }
                         }
                     }
-                }
-                ownerState.activatedAt = nextCallActivation();
-                var continuationActivation = ownerState.activatedAt;
-                root.__operitCurrentCallId = ownerCallId;
-                root.__operit_call_runtime_ref = ownerState.callRuntime;
-                try { return handler(value); }
-                finally {
-                    // Completing the owning call already restored the surviving context.
-                    // Writing the captured value back would resurrect a cleaned call id and
-                    // leave an unrelated suspended call pointing at a deleted session.
-                    // Host completion explicitly activates its owner before resolving a native
-                    // await. Preserve that handoff; native await does not invoke this then wrapper.
-                    if (normalizeCallId(root.__operitCurrentCallId) === ownerCallId &&
-                        ownerState.activatedAt === continuationActivation) {
-                        restoreCallContext(restoreLiveCallId(previousCallId, ownerCallId));
+                    ownerState.activatedAt = nextCallActivation();
+                    var continuationActivation = ownerState.activatedAt;
+                    root.__operitCurrentCallId = ownerCallId;
+                    root.__operit_call_runtime_ref = ownerState.callRuntime;
+                    try { return handler(value); }
+                    finally {
+                        // Preserve explicit host-completion handoffs and never restore a retired call.
+                        if (normalizeCallId(root.__operitCurrentCallId) === ownerCallId &&
+                            ownerState.activatedAt === continuationActivation) {
+                            restoreCallContext(restoreLiveCallId(previousCallId, ownerCallId));
+                        }
                     }
+                } finally {
+                    releaseSubscription();
                 }
             };
         }
-        return originalThen.call(this, bindContinuation(onFulfilled), bindContinuation(onRejected));
+        try {
+            return originalThen.call(this, bindContinuation(onFulfilled, false), bindContinuation(onRejected, true));
+        } catch (error) {
+            releaseSubscription();
+            throw error;
+        }
     };
 
     /** Activates one detached call before its queued JavaScript jobs are resumed. */

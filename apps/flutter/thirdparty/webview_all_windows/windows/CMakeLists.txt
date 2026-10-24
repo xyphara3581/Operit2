@@ -134,6 +134,7 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE
   flutter
   flutter_wrapper_plugin
   windowscodecs
+  comctl32
   ole32
   shlwapi
 )

@@ -1,8 +1,8 @@
 use js_sys::{Array, Function, Object, Reflect};
 use operit_host_api::{
     HostError, HostJavaScriptAsyncJsonCallback, HostJavaScriptExecutionInterrupt,
-    HostJavaScriptInterruptHandler, HostJavaScriptJsonCallback, HostJavaScriptRuntime,
-    HostJavaScriptRuntimeHost, HostJavaScriptRuntimeState, HostJavaScriptRuntimeStateAsyncTask,
+    HostJavaScriptInterruptHandler, HostJavaScriptCallback, HostJavaScriptRuntime,
+    HostJavaScriptValue, HostJavaScriptRuntimeHost, HostJavaScriptRuntimeState, HostJavaScriptRuntimeStateAsyncTask,
     HostJavaScriptRuntimeStateFactory, HostJavaScriptRuntimeStateHandle,
     HostJavaScriptRuntimeStateOutput, HostJavaScriptRuntimeStateOutputFuture,
     HostJavaScriptRuntimeStateTask, HostResult,
@@ -45,7 +45,7 @@ static NEXT_JAVASCRIPT_STATE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 enum WebJavaScriptBinding {
-    Synchronous(HostJavaScriptJsonCallback),
+    Synchronous(HostJavaScriptCallback),
     Asynchronous(HostJavaScriptAsyncJsonCallback),
 }
 
@@ -61,18 +61,20 @@ impl WebHostJavaScriptRuntime {
         let bindings = self.bindings.clone();
         let callback = Closure::wrap(Box::new(
             move |name: String, arguments: JsValue| -> Result<JsValue, JsValue> {
-                let arguments = structuredArgument(&arguments, 0, &mut 0)
-                    .and_then(|value| match value {
-                        serde_json::Value::Array(values) => Ok(values),
-                        _ => Err(HostError::new("Host callback arguments must be an array")),
-                    })
-                    .map_err(|error| JsValue::from_str(&error.to_string()))?;
+                let arguments = Array::from(&arguments).iter().map(|argument| {
+                    if argument.is_instance_of::<js_sys::Uint8Array>() {
+                        return Ok(HostJavaScriptValue::Buffer(js_sys::Uint8Array::new(&argument).to_vec().into()));
+                    }
+                    structuredArgument(&argument, 0, &mut 0).map(HostJavaScriptValue::Json)
+                }).collect::<HostResult<Vec<_>>>().map_err(|error| JsValue::from_str(&error.to_string()))?;
                 let binding = bindings.borrow().get(&name).cloned().ok_or_else(|| {
                     JsValue::from_str(&format!("JavaScript host binding is unavailable: {name}"))
                 })?;
                 let value = match binding {
                     WebJavaScriptBinding::Synchronous(callback) => callback(arguments),
                     WebJavaScriptBinding::Asynchronous(callback) => {
+                        let arguments = arguments.into_iter().map(HostJavaScriptValue::into_json).collect::<HostResult<Vec<_>>>()
+                            .map_err(|error| JsValue::from_str(&error.to_string()))?;
                         let mut arguments = arguments.into_iter();
                         let id = arguments
                             .next()
@@ -219,10 +221,10 @@ impl HostJavaScriptRuntime for WebHostJavaScriptRuntime {
     }
 
     /// Registers a synchronous binding using the same structured snapshot contract.
-    fn registerHostJavaScriptJsonFunction(
+    fn registerHostJavaScriptFunction(
         &mut self,
         name: &str,
-        callback: HostJavaScriptJsonCallback,
+        callback: HostJavaScriptCallback,
     ) -> HostResult<()> {
         self.execute(
             serde_json::json!({"operation":"binding","name":name,"factory":"syncBinding"}),

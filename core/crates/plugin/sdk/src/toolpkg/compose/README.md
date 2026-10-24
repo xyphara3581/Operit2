@@ -1,108 +1,111 @@
 # ToolPkg Compose runtime
 
-The Rust SDK packages these JavaScript modules at build time. `sources.json` is the ordered
-source manifest shared by `build.rs` and `tools/runtime/compose_scripts.mjs`. Runtime engines
-receive the prepared context and execution scripts through the existing Rust builders;
-page engines never read this directory or assemble a second runtime.
+`sources.json` is the ordered source manifest used by the Rust SDK build and
+`tools/runtime/compose_scripts.mjs`. Page runtimes receive the prepared SDK
+scripts through the host. They do not read this directory themselves.
+
+## Execution model
+
+The compiler emits ABI 4 artifacts containing immutable layout programs. A
+program contains instruction operands for constants, dynamic parameters,
+objects, arrays, local instruction addresses, and array concatenation. Directly
+nested UI calls share one program. Arbitrary helper calls, object accessors,
+spreads, evaluation order and reactive lexical ownership retain ordinary
+JavaScript behavior. Helper boundaries can therefore produce multiple instances
+for a single logical row.
+
+Calling a compiled UI expression declares a source instance and its parameter
+vector. Construction normalizes the dynamic values at that boundary, binds
+instance-owned events, and records direct source references. It does not expand
+the program into JavaScript nodes. The normal commit visits source membership
+and emits a transaction containing programs, instances, explicit patches, and
+removed source IDs. Each program is announced once per session.
+
+Public node handles expose lazy instruction views for plugins that explicitly
+read `props`, `children`, `slots` or `type`. Assignments produce local field
+patches. Local mutation validation is atomic. Parameters hidden by explicit
+edits do not retain removed source addresses in transport snapshots. The cached
+constructor values remain available to the owning JavaScript instance.
+
+Flutter installs and validates each program once. An instruction cursor contains
+only a source and a local instruction address. Source instances own parameters
+and change notifications; individual instructions do not own retained mutable
+node records. Flutter owns occurrence keys, mount lifetime, event bindings and
+resources. A source may be mounted more than once without duplicating its
+JavaScript event slots. CLI and desktop consumers use the same program store
+and transient instruction views.
+
+## Modules
 
 | Module | Responsibility |
 | --- | --- |
-| `Compiler.js`, `Parser.js` | Produce portable artifacts with hoisted UI templates; lazily initialize Acorn for legacy source. |
-| `Generation.js` | Compare dynamic template values, retain current closures, and observe node mutations. |
-| `Actions.js` | Own callback closures and action IDs, bind mounted occurrences, and release detached registrations. |
-| `Retained.js` | Reconcile mounted nodes and emit ordered flat revisions. |
-| `Reactive.js` | Track state dependencies and schedule only affected expressions. |
-| `Nodes.js` | Normalize public UI properties, child slots, modifiers, and callback references. |
-| `State.js` | Own keyed hooks and state-change subscriptions. |
-| `Theme.js` | Validate host snapshots and deliver theme changes. |
-| `WebView.js` | Own controller requests and accepted JavaScript-interface methods. |
-| `Host.js` | Adapt required native environment, tool, package, navigation, and picker bindings. |
-| `Context.js` | Assemble a single SDK context and preserve its stores for its session. |
-| `Session.js` | Resolve entries and create or refresh the exact owning session. |
-| `Dispatch.js` | Run actions, drain intermediate work, and retire listeners when ownership ends. |
-| `Responses.js`, `Exports.js` | Deliver each revision through the owning response sink and publish host entry points. |
+| `Compiler.js`, `Parser.js`, `Artifact.js` | Compile source into shared programs and enforce artifact ABI 4. |
+| `Buffer.js` | Write indexed parameter storage during construction and seal the single transferable arena. |
+| `Composition.js` | Own source parameters, reference membership, explicit edits and atomic revisions. |
+| `Actions.js` | Own callback closures, context ownership and transport event addresses. |
+| `Nodes.js` | Expose logical public handles, mutation observation and dynamic UI constructors. |
+| `Reactive.js` | Track lexical dependencies, source slots and scheduled expression execution. |
+| `State.js`, `Lazy.js` | Own hooks, memo execution and bounded list windows. |
+| `Theme.js`, `WebView.js`, `Host.js` | Bind host snapshots, controller operations and host capabilities. |
+| `Context.js` | Assemble the original owning context and its stores. |
+| `Session.js`, `Dispatch.js` | Resolve screen entries and execute commands and lifecycle events. |
+| `Responses.js`, `Exports.js` | Publish command-owned transactions and expose host entry points. |
 
-## Ownership rules
+Generation, Records and Retained are removed from production execution. Earlier
+executable artifact ABIs must be rebuilt; there is no old-protocol adapter.
 
-A context has one action registry. Generated nodes hold weak references to callback ownership,
-so cached nodes can mount again after their old transport IDs have expired. A callback from
-another context cannot be rebound just because its string ID happens to match. Generation
-owns expression caching and mutation observation; it does not keep a second callback registry.
+## Ownership and delivery
 
-A screen must keep the original SDK context. Local modal drafts use distinct hook keys,
-not cloned context objects. Generation rejects a copied context at the boundary.
+A context owns one event registry. Callback references preserve their context
+and logical event ownership through explicit public property views. Detached
+sources retain their cached closures, but their live transport addresses expire.
+Remounting creates fresh addresses. Removing an event from a live source also
+expires its registration. A foreign context cannot bind a callback merely
+because its string ID happens to match.
 
-A command owns its response sink and final revision. Intermediate delivery must finish before
-the final response is built. Synchronous callbacks render once in their final response;
-asynchronous callbacks can publish intermediate revisions. Work scheduled immediately before
-an action settles is coalesced into its final evaluation. Pending asynchronous work still
-streams without waiting for a host event or a Flutter frame. Unchanged intermediate trees
-publish no update and allocate no revision; every successful command retains its final
-completion response and contiguous published revisions. Node transport IDs are compact
-session-owned handles; keyed occurrence matching and ancestor paths stay inside the runtime.
-Host input updates render the current root and run its `onInputsChanged` callback in the same
-command. The callback uses the normal action pipeline, including awaited asynchronous work,
-intermediate revisions and errors; hosts do not send a second action command for it.
-Detached asynchronous work may keep its listener only while the
-host still owns its pending references. Render and state-flush failures propagate to that
-command; detached failures report through its host sink. They do not become successful empty
-responses.
+A command owns its response sink and completion revision. Intermediate updates
+complete before the final response. Unchanged intermediate results allocate no
+revision. Successful final responses preserve contiguous revisions. Render,
+validation and action failures propagate to the owning command.
 
-## Compilation and reuse
+Host input updates refresh the current root and execute `onInputsChanged` in the
+same command. Memo and lazy item execution retain their lexical hook and
+subscription ownership. A shared layout program does not merge independent
+reactive executions or their effects. List windowing remains a separate API;
+the program protocol also applies to fully materialized lists.
 
-The compiler hoists fixed UI argument structure into module-level factories. Each call passes
-only its dynamic values; generation reuses the prior node until those values change. Opaque
-objects retain detached, copy-on-change snapshots, so in-place mutations remain observable.
-Callback cells replace their captured handler on each evaluation, including a reused template.
-Property forms with observable enumeration or access semantics remain opaque. Argument spreads
-use the existing expression path. Version 2 artifacts use templates; version 1 artifacts remain
-executable without source recompilation.
+## Binary ownership
 
-A memo factory owns a generation region and a reactive execution unit. Skipping it retains
-its node occurrences, state subscriptions, and effects; a sibling cannot borrow those occurrences
-or callback cells. Removing the branch releases its subscriptions and effects, and remounting a
-node-producing memo executes its factory again. Source replacement invalidates generated-node
-memos while preserving ordinary keyed data memo identity.
+`Buffer.js` writes final indexed storage while construction normalizes each
+parameter. Commit assembles address tables; it does not construct another
+transaction object tree. The 32-byte CPB1 header stores version, used length,
+phase, transaction address, optional action-result address and navigation
+address. Values use aligned 16-byte descriptors, little-endian fields and
+UTF-16 string storage. Transaction records are
+`[reset, revision, rootInstance, rootNode, programs, instances, removed]`;
+instances are `[id, programId, values, patches]` and patches are
+`[node, field, value]`. Programs retain their instruction object schema.
 
-`ctx.lazyItems` exposes list identity, count, extent and initial window size. Content invalidation
-is engine-owned; plugins do not declare a second set of builder dependencies. SDK-created range
-callbacks are recognized privately by the action registry, including generation trampolines. Their
-final evaluation uses the existing dependency-drain path and reopens only viewport layout. Ordinary
-callbacks (including no-render callbacks), observable state writes, host input changes, theme changes,
-explicit renders and source replacement invalidate the content revision. This conservative boundary
-also observes plain JS closures, mutable refs and in-place object changes without inventing an
-immutability contract for arbitrary plugin objects. It does not implement Kotlin's full compiler
-stability inference or promise to skip builders on unrelated business actions.
+The existing synchronous Host registration accepts either ordinary structured
+arguments or a top-level owned byte buffer. Compose sends only a Uint8Array.
+Native V8 detaches its ArrayBuffer and transfers the backing-store owner without
+reading the layout payload. Rust validates the header and reads application
+results and navigation independently; updates retain the original buffer through
+CoreBuffer and CoreLink attachments. Flutter projects indexed containers from
+that buffer rather than decoding a second parameter tree. Finite CLI and desktop
+snapshots explicitly materialize their views using the same binary format.
 
-Each item owns a memo region identified by its absolute index: viewport overlap retains its nodes,
-callbacks, subscriptions and effects; only entering items execute their builders. Count and extent
-changes invalidate materialization as well. Leaving items are released by the existing generation
-and reactive owners, keeping caches bounded by the window. No second node or callback registry is
-involved. A wrapper that invokes a range callback while running business code is an ordinary action;
-reusing a callback slot updates its private classification with its current closure. The character
-sidebar keeps its stable action table current and memoizes validation of unchanged host snapshots.
-
-Generation indexes a call site once and retains its occurrences in an array. A render pass counter
-resets that site's occurrence index and trims removed loop entries without constructing a new
-call-site/index string or maintaining a separate live-occurrence set for each node.
-
-The embedded sliver reports an interval that already includes Flutter's cache extent. The DSL
-adds only a small refill margin to that interval; a regular list viewport retains its own larger
-prefetch window. Applying both buffers to the sliver would trigger an unnecessary initial range
-action even when all cached rows were already available.
-
-A host-owned, bounded cache shares compiled module bytecode across page runtimes. Each page
-materializes its own factory and executes its own module initialization. Functions, globals,
-module instances and callbacks stay in that page's heap. The cache keys exact source, includes
-parameter names, retains at most 128 entries / 16 MiB, and never persists engine bytecode as a
-portable plugin artifact. Compilation runs outside the shared LRU lock, so a cold page cannot
-hold up another page's cached module. Concurrent misses can compile the same source, but the
-insertion check retains one entry and charges its memory once. Module compilation errors
-propagate without entering the cache.
+Web uses the same Host registration and Compose format. Its Host transfers the
+JS allocation before copying the bytes into Wasm memory. Network transports
+also pay their byte-transfer cost. Constant work for the native submission step
+does not make construction, arbitrary action results, list membership or Flutter
+layout constant-time.
 
 ## Validation
 
-`tools/tests/compose_dsl*.test.mjs` exercise the assembled runtime and compiled artifacts.
-Character-card native tests execute the packaged screen modules against the same runtime.
-`operit-js-bridge` Compose tests run the Rust-assembled sources in QuickJS. Performance probes
-also consume the manifest, so they measure the same module order as production.
+`tools/tests/compose_dsl_*.test.mjs` exercises compilation, execution, ownership,
+mutation and transaction behavior. Assertion-only host projections live in test
+support files and run outside benchmark timers. Flutter layout and lifecycle
+tests consume program transactions. `tools/benchmarks/compose_sidebar.mjs`
+compares full SDK versions against the same raw sidebar source; Node timings
+must not be reported as native engine timings.

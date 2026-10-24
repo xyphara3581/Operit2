@@ -1,3 +1,4 @@
+#include "operit_local_llm_export.h"
 #include "llama.h"
 #include "llm/llm.hpp"
 #include <nlohmann/json.hpp>
@@ -250,7 +251,8 @@ json mnn_generate(const std::string &path, const json &messages, const json &bod
 
 } // namespace
 
-extern "C" char *operit_local_llm_generate(const char *engine, const char *path, const char *request_json, const char *settings_json) noexcept {
+/// Generates one response and keeps C++ exception ownership inside the engine.
+extern "C" OPERIT_LOCAL_LLM_EXPORT char *operit_local_llm_generate(const char *engine, const char *path, const char *request_json, const char *settings_json) noexcept {
     std::lock_guard<std::mutex> lock(inference_mutex);
     json result;
     try {
@@ -270,8 +272,10 @@ extern "C" char *operit_local_llm_generate(const char *engine, const char *path,
     if (output) std::memcpy(output, text.c_str(), text.size() + 1);
     return output;
 }
-extern "C" void operit_local_llm_free(char *text) noexcept { std::free(text); }
-extern "C" void operit_local_llm_unload() noexcept {
+/// Releases response storage in the same runtime that allocated it.
+extern "C" OPERIT_LOCAL_LLM_EXPORT void operit_local_llm_free(char *text) noexcept { std::free(text); }
+/// Releases the engine-owned model caches across the plain C boundary.
+extern "C" OPERIT_LOCAL_LLM_EXPORT void operit_local_llm_unload() noexcept {
     std::lock_guard<std::mutex> lock(inference_mutex);
     mnn_cache.reset(); llama_model_cache.reset(); loaded_key.clear();
 }

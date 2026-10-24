@@ -139,7 +139,7 @@ impl ModelConfigManager {
         }
     }
 
-    const PREFERENCES_VERSION: u32 = 4;
+    const PREFERENCES_VERSION: u32 = 5;
     pub const DEFAULT_PROVIDER_ID: &'static str = ModelConfigDefaults::DEFAULT_PROVIDER_ID;
     pub const DEFAULT_MODEL_ID: &'static str = ModelConfigDefaults::DEFAULT_MODEL_ID;
 
@@ -916,7 +916,21 @@ impl ModelConfigManager {
                     .collect::<Vec<_>>();
                 for (key, value) in records {
                     let encoded = serde_json::from_value::<String>(value)?;
-                    let record: serde_json::Value = serde_json::from_str(&encoded)?;
+                    let mut record: serde_json::Value = serde_json::from_str(&encoded)?;
+                    for field in ["providerTypeId", "providerType"] {
+                        let removed = record
+                            .get(field)
+                            .and_then(|value| value.as_str())
+                            .map(|value| {
+                                Self::REMOVED_PROVIDER_TYPE_IDS
+                                    .iter()
+                                    .any(|removed| value.trim().eq_ignore_ascii_case(removed))
+                            })
+                            .unwrap_or(false);
+                        if removed {
+                            record[field] = serde_json::json!(ApiProviderType::OTHER.name());
+                        }
+                    }
                     let provider: ProviderProfile = serde_json::from_value(record.clone())?;
                     let id = key
                         .strip_prefix("provider_")
@@ -931,9 +945,47 @@ impl ModelConfigManager {
                 preferences.remove(&Self::PROVIDER_LIST_KEY());
                 Ok(())
             }
+            4 => {
+                // iFlow was removed as a provider type. A version-four record naming it
+                // fails to deserialize in readProviderList, so rewrite it to OTHER here
+                // before any later arm or the provider list reads it.
+                let records = preferences
+                    .iterEntries()
+                    .filter_map(|(key, value)| {
+                        (key != "provider_list" && key.starts_with("provider_"))
+                            .then(|| (key.to_owned(), value.clone()))
+                    })
+                    .collect::<Vec<_>>();
+                for (key, value) in records {
+                    let mut record = value;
+                    for field in ["providerTypeId", "providerType"] {
+                        let removed = record
+                            .get(field)
+                            .and_then(|value| value.as_str())
+                            .map(|value| {
+                                Self::REMOVED_PROVIDER_TYPE_IDS
+                                    .iter()
+                                    .any(|removed| value.trim().eq_ignore_ascii_case(removed))
+                            })
+                            .unwrap_or(false);
+                        if removed {
+                            record[field] = serde_json::json!(ApiProviderType::OTHER.name());
+                        }
+                    }
+                    preferences.set(&stringPreferencesKey(&key), record);
+                }
+                Ok(())
+            }
             from => Err(PreferencesDataStoreError::MissingMigration { from, to: from + 1 }),
         }
     }
+
+    /// Provider type ids that earlier builds could persist but that no longer exist in
+    /// `ApiProviderType`. A provider record naming one fails to deserialize, which makes
+    /// `readProviderList` reject the whole store. Migrations that can encounter such a
+    /// record rewrite its two provider-type fields to the OpenAI-compatible catch-all
+    /// before the provider list is read.
+    const REMOVED_PROVIDER_TYPE_IDS: [&'static str; 1] = ["IFLOW"];
 
     /// Loads and decodes one provider profile from preferences.
     fn loadProviderFromDataStore(
@@ -1345,13 +1397,16 @@ mod tests {
         });
         host.writeBytes(path, &serde_json::to_vec(&legacy).unwrap())
             .unwrap();
+        let expectedMigrationStep = std::cell::Cell::new(3u32);
         let store = CoreNodeStateStore::newWithStorage(host, path).withSchema(
             ModelConfigManager::PREFERENCES_VERSION,
             |version, preferences| {
                 assert_eq!(
-                    version, 3,
-                    "an existing file must not execute initialization"
+                    version,
+                    expectedMigrationStep.get(),
+                    "an existing file must run its migrations in order"
                 );
+                expectedMigrationStep.set(version + 1);
                 ModelConfigManager::migratePreferences(version, preferences)
             },
         );
@@ -1367,8 +1422,119 @@ mod tests {
         assert!(migrated
             .get(&stringPreferencesKey("provider_list"))
             .is_none());
-        assert_eq!(store.schemaVersion().unwrap(), 4);
+        assert_eq!(store.schemaVersion().unwrap(), 5);
         assert_eq!(store.data().unwrap(), migrated);
+    }
+
+    /// Rewrites a persisted iFlow provider to the OpenAI-compatible catch-all so the list stays readable.
+    #[test]
+    fn iflow_provider_migrates_to_other_provider_type() {
+        use operit_model::ModelConfigData::ProviderProfile;
+        use operit_store::PreferencesDataStore::{stringPreferencesKey, CoreNodeStateStore};
+        let root = unique_test_root("schema_four_iflow");
+        let host: Arc<dyn RuntimeStorageHost> =
+            Arc::new(TestRuntimeStorageHost { root: root.clone() });
+        let path = "runtime/config/model-schema-four.preferences.json";
+        let iflow = ProviderProfile::new(
+            "iflow".into(),
+            "iFlow".into(),
+            ApiProviderType::OPENAI,
+            "https://apis.iflow.cn/v1/chat/completions".into(),
+        );
+        let mut record = serde_json::to_value(&iflow).unwrap();
+        record["providerTypeId"] = serde_json::json!("IFLOW");
+        record["providerType"] = serde_json::json!("IFLOW");
+        let openai = ProviderProfile::new(
+            "openai".into(),
+            "OpenAI".into(),
+            ApiProviderType::OPENAI,
+            "https://api.openai.com/v1/chat/completions".into(),
+        );
+        let legacy = serde_json::json!({
+            "__operit_preferences_schema_version": "4",
+            "provider_iflow": record,
+            "provider_openai": serde_json::to_value(&openai).unwrap()
+        });
+        host.writeBytes(path, &serde_json::to_vec(&legacy).unwrap())
+            .unwrap();
+        let store = CoreNodeStateStore::newWithStorage(host, path).withSchema(
+            ModelConfigManager::PREFERENCES_VERSION,
+            |version, preferences| {
+                assert_eq!(
+                    version, 4,
+                    "an existing version-four file keeps its own arm"
+                );
+                ModelConfigManager::migratePreferences(version, preferences)
+            },
+        );
+        let migrated = store.data().unwrap();
+        let iflowRecord = migrated
+            .get(&stringPreferencesKey("provider_iflow"))
+            .unwrap();
+        assert_eq!(iflowRecord["providerTypeId"], "OTHER");
+        assert_eq!(iflowRecord["providerType"], "OTHER");
+        assert_eq!(iflowRecord["name"], "iFlow");
+        let openaiRecord = migrated
+            .get(&stringPreferencesKey("provider_openai"))
+            .unwrap();
+        assert_eq!(openaiRecord["providerTypeId"], "OPENAI");
+        assert_eq!(openaiRecord["providerType"], "OPENAI");
+        assert_eq!(
+            ModelConfigManager::readProviderList(&migrated).unwrap(),
+            vec!["openai", "iflow"]
+        );
+        assert_eq!(store.schemaVersion().unwrap(), 5);
+    }
+
+    /// Cleans an iFlow record on an older file whose arms still parse full provider profiles.
+    #[test]
+    fn iflow_provider_migrates_from_schema_three() {
+        use operit_model::ModelConfigData::ProviderProfile;
+        use operit_store::PreferencesDataStore::{stringPreferencesKey, CoreNodeStateStore};
+        let root = unique_test_root("schema_three_iflow");
+        let host: Arc<dyn RuntimeStorageHost> =
+            Arc::new(TestRuntimeStorageHost { root: root.clone() });
+        let path = "runtime/config/model-schema-three-iflow.preferences.json";
+        let iflow = ProviderProfile::new(
+            "iflow".into(),
+            "iFlow".into(),
+            ApiProviderType::OPENAI,
+            "https://apis.iflow.cn/v1/chat/completions".into(),
+        );
+        let mut record = serde_json::to_value(&iflow).unwrap();
+        record["providerTypeId"] = serde_json::json!("IFLOW");
+        record["providerType"] = serde_json::json!("IFLOW");
+        let legacy = serde_json::json!({
+            "__operit_preferences_schema_version": "3",
+            "provider_list": "[\"iflow\"]",
+            "provider_iflow": serde_json::to_string(&record).unwrap()
+        });
+        host.writeBytes(path, &serde_json::to_vec(&legacy).unwrap())
+            .unwrap();
+        let expectedMigrationStep = std::cell::Cell::new(3u32);
+        let store = CoreNodeStateStore::newWithStorage(host, path).withSchema(
+            ModelConfigManager::PREFERENCES_VERSION,
+            |version, preferences| {
+                assert_eq!(
+                    version,
+                    expectedMigrationStep.get(),
+                    "an older file must run its migrations in order"
+                );
+                expectedMigrationStep.set(version + 1);
+                ModelConfigManager::migratePreferences(version, preferences)
+            },
+        );
+        let migrated = store.data().unwrap();
+        let iflowRecord = migrated
+            .get(&stringPreferencesKey("provider_iflow"))
+            .unwrap();
+        assert_eq!(iflowRecord["providerTypeId"], "OTHER");
+        assert_eq!(iflowRecord["providerType"], "OTHER");
+        assert_eq!(
+            ModelConfigManager::readProviderList(&migrated).unwrap(),
+            vec!["iflow"]
+        );
+        assert_eq!(store.schemaVersion().unwrap(), 5);
     }
 
     #[test]

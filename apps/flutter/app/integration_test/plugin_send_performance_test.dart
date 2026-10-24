@@ -208,6 +208,7 @@ void main() {
           final chatId = await clients.chatRuntimeHolderMain.createNewChat(
             setAsCurrentChat: false,
             sourceChatId: null,
+            parentChatId: null,
             input: {
               package: {'version': 1, 'selection': 'card:${card['id']}'},
             },

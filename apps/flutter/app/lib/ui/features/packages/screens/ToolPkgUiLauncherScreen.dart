@@ -1,6 +1,7 @@
 // ignore_for_file: file_names
 
 import 'dart:async';
+import '../../../../core/compose/compose_program_buffer.dart' as compose_buffer;
 import 'ComposeDslImageSource.dart';
 import '../../../../core/application/PluginHotReload.dart';
 import 'dart:math' as math;
@@ -40,7 +41,9 @@ part 'compose_dsl/text_field.dart';
 part 'compose_dsl/canvas_painter.dart';
 part 'compose_dsl/size_reporting.dart';
 part 'compose_dsl/render_models.dart';
-part 'compose_dsl/retained_nodes.dart';
+part 'compose_dsl/program_store.dart';
+part 'compose_dsl/program_executor.dart';
+part 'compose_dsl/program_host.dart';
 part 'compose_dsl/modifiers.dart';
 part 'compose_dsl/value_parsers.dart';
 part 'compose_dsl/renderer.dart';
@@ -181,7 +184,7 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
   Future<void> _reloadTail = Future<void>.value();
   int _reloadGeneration = 0;
   bool _reloading = false;
-  final _ComposeDslNodeStore _nodeStore = _ComposeDslNodeStore();
+  final _ComposeProgramStore _programStore = _ComposeProgramStore();
   final Map<String, _ComposeDslPendingCommand> _composePending = {};
   String? _composeSessionId;
   Object? _composeSessionError;
@@ -685,18 +688,18 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
       final watch = const bool.fromEnvironment('OPERIT_PROFILE_COMPOSE_STAGES')
           ? (Stopwatch()..start())
           : null;
-      _nodeStore.apply(update);
+      _programStore.apply(update);
       if (watch != null) {
         debugPrintSynchronously(
           'event=compose_pipeline_stage stage=dart-node-apply '
           'durationMs=${(watch.elapsedMicroseconds / 1000).toStringAsFixed(3)} '
           'wallMicros=${DateTime.now().microsecondsSinceEpoch} request=${event.requestId} '
-          'revision=${update.revision} nodes=${update.upserts.length}',
+          'bytes=${update.buffer.length}',
         );
       }
     }
     if (oldRoot == null && update == null) return;
-    final root = _nodeStore.root;
+    final root = _programStore.root;
     _renderResult = _ComposeDslRenderResult(
       tree: root,
       actionResult: event.actionResult,
@@ -840,7 +843,7 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
   @override
   void dispose() {
     PluginHotReload.revision.removeListener(_reloadDevelopmentPackage);
-    _nodeStore.dispose();
+    _programStore.dispose();
     _routeLoadGeneration += 1;
     final executionContext = _activeExecutionContext;
     _activeExecutionContext = null;

@@ -101,7 +101,9 @@ TUI 设备窗口（`/network devices`）与 Flutter 设备行都提供这个入�
 Relay 具备查看成员设备和网络中继能力；Edge 具备查看成员设备和承载 Core 执行能力。
 `runtime.execute` 描述设备能否承载 Core 执行，`switch_core` 和初始 Binding 分配据此选择目标，并检查目标确实提供 Core。
 聊天读写不再单独设置权限，仍通过已认证的空间成员关系和 Binding 路由。
-审计和存储能力继续可以分配给自定义身份，没有对应的内置身份。
+User 和 Relay 默认具有 `storage.provide`，Edge 默认没有；审计和其他能力也可
+通过自定义身份分配。权限角色不表示节点实际实现了相应服务，设备侧职责见
+[Edge 架构](edge-architecture.md)。
 
 ```text
 control show

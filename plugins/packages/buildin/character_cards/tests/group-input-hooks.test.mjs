@@ -24,12 +24,17 @@ function event(change = {}) {
 
 /** Opens the real main registrations and file service with explicitly controlled Chat/AI ABI inputs. */
 async function environment(t) {
-  const failures = [], runtime = await selectorEnvironment(t, {}, { console: { ...console,
+  const failures = [], timers = { created: 0, cleared: 0 };
+  const runtime = await selectorEnvironment(t, {}, { console: { ...console,
     /** Records actual asynchronous plugin failures without implementing another error handler. */
     error(message) { failures.push(message); },
-  } });
+  },
+    /** Records the exact session-retention timer activity behind detached group work. */
+    setTimeout(handler, delay) { timers.created += 1; return setTimeout(handler, delay); },
+    clearTimeout(id) { timers.cleared += 1; clearTimeout(id); },
+  });
   assert.equal(runtime.chatInputHooks.length, 1); assert.equal(runtime.chatInputHooks[0].function, runtime.main.onGroupInputSubmit);
-  return { ...runtime, failures,
+  return { ...runtime, failures, timers,
     /** Invokes only the actually registered exported submission hook. */
     submit(input = event()) { return runtime.chatInputHooks[0].function(input); },
   };
@@ -134,6 +139,19 @@ test("registered group input sends complete input once and ordered turns use rea
   assert.equal(snapshots.get(20).participantId, second.id);
   assert.equal(snapshots.get(21).participantId, first.id);
   assert.deepEqual(runtime.failures, []);
+});
+
+/** Leaves background Promise ownership to the shared runtime without scheduling artificial timers. */
+test("consumed group submissions settle without plugin keepalive timers", async t => {
+  const runtime = await environment(t); await bindGroup(runtime);
+  runtime.tools.Chat.call = async () => ({ text: JSON.stringify({ rounds: [[]] }) });
+  runtime.tools.Chat.sendMessage = async request => receipt(request);
+  const admitted = await runtime.submit();
+  assert.equal(admitted.action, "Consume");
+  assert.equal(runtime.timers.created, 0, "group execution must not schedule an artificial keepalive");
+  const done = await settled(runtime, admitted.metadata.submissionId);
+  assert.equal(done.status, "settled", done.error);
+  assert.equal(runtime.timers.cleared, 0);
 });
 
 /** Cancels during real planner suspension, keeps duplicate input intact and resumes only by an explicit UI action. */

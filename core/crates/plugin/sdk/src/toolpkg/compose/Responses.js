@@ -14,21 +14,18 @@ function profileComposeStage(bundle, sink, stage, started, revision) {
 }
 
 function wrapComposeResponse(bundle, tree, actionResult, includeNavigation, responseSink) {
-  var response = {
-    navigationCommands: includeNavigation ? bundle.takeNavigationCommands() : []
-  };
+  var navigation = includeNavigation ? bundle.takeNavigationCommands() : [], update = null;
   if (typeof tree !== 'undefined') {
     var commitStarted = bundle.profileStages ? Date.now() : 0;
-    response.update = bundle.composition.commit(tree, !includeNavigation);
-    if (response.update === null) return null;
-    profileComposeStage(bundle, responseSink, 'js-retained-commit', commitStarted, response.update.revision);
+    update = bundle.composition.finish(tree, !includeNavigation);
+    if (update === null) return null;
+    profileComposeStage(bundle, responseSink, 'js-transaction', commitStarted, update.revision);
   }
-  if (typeof actionResult !== 'undefined') {
-    response.actionResult = actionResult;
-  }
+  var phase = includeNavigation ? 'final' : 'intermediate';
+  var frame = update ? update.seal(phase, actionResult, navigation) : bundle.composition.response(phase, actionResult, navigation);
   var sendStarted = bundle.profileStages ? Date.now() : 0;
-  responseSink.sendComposeResponse(includeNavigation ? 'final' : 'intermediate', response);
-  profileComposeStage(bundle, responseSink, 'js-send-inclusive', sendStarted, response.update ? response.update.revision : 0);
+  responseSink.sendComposeResponse(phase, frame);
+  profileComposeStage(bundle, responseSink, 'js-send-inclusive', sendStarted, update ? update.revision : 0);
   return null;
 }
 
@@ -49,7 +46,7 @@ function buildComposeResponse(bundle, entry, actionResult, includeNavigation, re
   profileComposeStage(bundle, responseSink, 'js-render-sync', renderStarted, 0);
   /// Uses the just-rendered closure so lifecycle reads observe the new host inputs.
   function complete(resolvedTree) {
-    var callback = inputsChanged && resolvedTree && resolvedTree.props && resolvedTree.props.onInputsChanged;
+    var callback = inputsChanged && bundle.composition.lifecycle(resolvedTree, 'onInputsChanged');
     if (callback && callback.__actionId) {
       return runComposeAction(bundle, entry, { actionId: callback.__actionId }, responseSink);
     }

@@ -14,6 +14,7 @@ use crate::services::core::MessageProcessingDelegate::{
     SendUserMessageProcessingRequest,
 };
 use crate::services::core::TokenStatisticsDelegate::TokenStatisticsDelegate;
+use crate::services::ProviderRuntimeSupportService::ChatConfigurationApi;
 use operit_host_api::HostManager::defaultHostRuntimeTaskSchedulerHost;
 use operit_host_api::HostRuntimeTaskSchedulerHost;
 use operit_model::AttachmentInfo::AttachmentInfo;
@@ -108,60 +109,93 @@ impl MessageCoordinationDelegate {
         self.nonFatalErrorCollectorJob = Some("nonFatalErrorCollectorJob".to_string());
     }
 
+    /// Reads a revision's persisted author and propagates storage or missing-identity errors.
+    pub(crate) async fn messageAuthorParticipantId(
+        &self,
+        service: &EnhancedAIService,
+        chatId: &str,
+        messageTimestamp: i64,
+        variantIndex: i32,
+    ) -> Result<String, String> {
+        let api = ChatConfigurationApi::ready(&service.tool_handler).await?;
+        let extensions = self
+            .chatHistoryDelegate
+            .chatHistoryManager
+            .readPluginExtensions(&operit_model::PluginExtensionTarget::PluginExtensionTarget::Message {
+                chatId: chatId.to_string(),
+                messageTimestamp,
+                variantIndex,
+            })
+            .map_err(|error| error.to_string())?;
+        extensions
+            .get(api.extensionOwner())
+            .and_then(|identity| identity.get("participantId"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| format!(
+                "Message revision has no recorded execution participant: {chatId}/{messageTimestamp}/{variantIndex}"
+            ))
+    }
+
     /// Recalculates the stable context window size for a chat and prompt mode.
     pub async fn recalculateStableWindowSize(
         &mut self,
         service: &mut EnhancedAIService,
-        chatId: Option<String>,
+        chatId: String,
         participantId: Option<String>,
         promptFunctionType: PromptFunctionType,
         chatProviderIdOverride: Option<String>,
-        chatModelIdOverride: Option<String>) -> Result<i64, String> {
-        let currentChat = chatId.as_ref().and_then(|chatId| {
-            self.chatHistoryDelegate
-                .chatHistoriesFlow()
-                .value()
-                .into_iter()
-                .find(|history| history.id == *chatId)
-        });
+        chatModelIdOverride: Option<String>,
+    ) -> Result<i64, String> {
+        let currentChat = self
+            .chatHistoryDelegate
+            .chatHistoriesFlow()
+            .value()
+            .into_iter()
+            .find(|history| history.id == chatId)
+            .ok_or_else(|| format!("Chat not found for context estimation: {chatId}"))?;
         let runtimeOptions = SendMessageOptions {
-            chatId: chatId.clone(),
+            chatId: Some(chatId.clone()),
             executionParticipantId: participantId.clone(),
             promptFunctionType: promptFunctionType.clone(),
             chatProviderIdOverride: chatProviderIdOverride.clone(),
             chatModelIdOverride: chatModelIdOverride.clone(),
             ..SendMessageOptions::new()
         };
-        let configuration = service
-            .resolveChatConfigurationForOptions(&runtimeOptions)
+        let request = service
+            .chatConfigurationRequestForOptions(&runtimeOptions)
+            .map_err(|error| error.to_string())?;
+        let configurations = ChatConfigurationApi::ready(&service.tool_handler)
+            .await?
+            .resolveContextParticipants(request)
+            .await?;
+        let mut windows = Vec::with_capacity(configurations.len());
+        for configuration in configurations {
+            let runtime = service
+                .createSendMessageRuntime(&runtimeOptions, configuration)
+                .map_err(|error| error.to_string())?;
+            let window = AIMessageManager::calculateStableContextWindow(StableContextWindowRequest {
+                enhancedAiService: service,
+                chatId: Some(chatId.clone()),
+                messageContent: String::new(),
+                chatHistory: self.chatHistoryDelegate.getRuntimeChatHistory(chatId.clone()),
+                workspacePath: self.chatHistoryDelegate.primaryWorkspacePathForChat(&currentChat),
+                workspaceFolders: self.chatHistoryDelegate.workspaceFolderPathsForChat(&currentChat),
+                promptFunctionType: promptFunctionType.clone(),
+                proxySenderName: None,
+                chatProviderIdOverride: chatProviderIdOverride.clone(),
+                chatModelIdOverride: chatModelIdOverride.clone(),
+                publishEstimate: false,
+                runtime,
+            })
             .await
             .map_err(|error| error.to_string())?;
-        let runtime = service
-            .createSendMessageRuntime(&runtimeOptions, configuration)
-            .map_err(|error| error.to_string())?;
-        AIMessageManager::calculateStableContextWindow(StableContextWindowRequest {
-            enhancedAiService: service,
-            chatId: chatId.clone(),
-            messageContent: String::new(),
-            chatHistory: chatId
-                .map(|id| self.chatHistoryDelegate.getRuntimeChatHistory(id))
-                .unwrap_or_default(),
-            workspacePath: currentChat
-                .as_ref()
-                .and_then(|chat| self.chatHistoryDelegate.primaryWorkspacePathForChat(chat)),
-            workspaceFolders: currentChat
-                .iter()
-                .flat_map(|chat| self.chatHistoryDelegate.workspaceFolderPathsForChat(chat))
-                .collect(),
-            promptFunctionType,
-            proxySenderName: None,
-            chatProviderIdOverride,
-            chatModelIdOverride,
-            publishEstimate: false,
-            runtime,
+            windows.push(window);
+        }
+        windows.into_iter().max().ok_or_else(|| {
+            "Conversation context requires a current bound participant".to_string()
         })
-        .await
-        .map_err(|error| error.to_string())
     }
 
     /// Recalculates and persists the stable context window for a chat.
@@ -175,7 +209,6 @@ impl MessageCoordinationDelegate {
         chatModelIdOverride: Option<String>,
     ) -> Option<i64> {
         let targetChatId = chatId.or_else(|| self.chatHistoryDelegate.currentChatIdFlow.value())?;
-        let executionParticipantId = participantId;
         let effectivePromptFunctionType =
             promptFunctionType.unwrap_or_else(|| self.currentPromptFunctionType.clone());
         let effectiveChatModelIdOverride =
@@ -185,8 +218,8 @@ impl MessageCoordinationDelegate {
         let newWindowSize = match self
             .recalculateStableWindowSize(
                 service,
-                Some(targetChatId.clone()),
-                executionParticipantId,
+                targetChatId.clone(),
+                participantId,
                 effectivePromptFunctionType,
                 effectiveChatProviderIdOverride,
                 effectiveChatModelIdOverride,
@@ -311,6 +344,15 @@ impl MessageCoordinationDelegate {
             .resolveChatConfigurationForOptions(&SendMessageOptions {
                 chatId: Some(chatId.clone()),
                 promptFunctionType: self.currentPromptFunctionType.clone(),
+                executionParticipantId: Some(
+                    self.messageAuthorParticipantId(
+                        enhancedAiService,
+                        &chatId,
+                        targetMessage.timestamp,
+                        targetMessage.selectedVariantIndex,
+                    )
+                    .await?,
+                ),
                 ..SendMessageOptions::new()
             })
             .await

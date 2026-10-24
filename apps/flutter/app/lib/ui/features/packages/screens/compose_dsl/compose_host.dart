@@ -108,7 +108,7 @@ class _ComposeHostState extends State<_ComposeHost> {
     }
     // Keep the mounted renderer in a stable slot while reporting action failures.
     // Removing it would fire disposal callbacks, whose commits can mount it again.
-    final renderer = _ComposeDslRenderer(
+    final renderer = _ComposeProgramExecutor(
       node: tree,
       onLoadHandledByHost: true,
       onAction: widget.onAction,
@@ -201,10 +201,7 @@ Widget buildComposeDslHostForTest({
   String? error,
   ToolPkgUiContentBuilder contentBuilder = _buildToolPkgUiBody,
 }) {
-  final tree = _ComposeDslNode.parse(node);
-  if (tree == null) {
-    throw const FormatException('A Compose host requires a valid node');
-  }
+  final tree = _composeProgramFixture(node);
   return _ComposeHost(
     loading: false,
     error: error,

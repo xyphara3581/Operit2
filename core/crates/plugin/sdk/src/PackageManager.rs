@@ -552,7 +552,7 @@ mod tests {
         fn execute_compose_dsl_script_stream_async(
             &self, _script: String, _runtime_options: BTreeMap<String, Value>,
             _env_overrides: BTreeMap<String, String>, _text_resources: Arc<BTreeMap<String, String>>,
-            _on_response: Arc<dyn Fn(Value) + Send + Sync>,
+            _on_response: Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>,
         ) -> crate::javascript::JsExecutionFuture<JsExecutionResult<Option<Value>>> {
             Box::pin(async { Err(crate::execution_result::JsExecutionError::invalid_request("This recording engine does not execute live Compose sessions")) })
         }
@@ -564,7 +564,7 @@ mod tests {
             _payload: Option<Value>,
             _runtimeOptions: BTreeMap<String, Value>,
             _envOverrides: BTreeMap<String, String>,
-            _on_intermediate_result: Arc<dyn Fn(Value) + Send + Sync>,
+            _on_intermediate_result: Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>,
         ) -> JsExecutionFuture<JsExecutionResult<Option<Value>>> {
             Box::pin(async move { Ok(Some(Value::String(actionId))) })
         }

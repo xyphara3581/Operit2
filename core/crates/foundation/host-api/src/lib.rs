@@ -2015,9 +2015,41 @@ pub type HostRuntimeTurnFuture = Pin<Box<dyn Future<Output = HostResult<()>> + S
 pub type HostJavaScriptAsyncJsonCallback =
     Arc<dyn Fn(u64, Vec<Value>) -> HostResult<()> + Send + Sync + 'static>;
 
-/// Handles a synchronous host operation using owned JSON-compatible arguments and results.
-pub type HostJavaScriptJsonCallback =
-    Arc<dyn Fn(Vec<Value>) -> HostResult<Value> + Send + Sync + 'static>;
+/// Owns an argument independently of the JavaScript heap that produced it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HostJavaScriptValue {
+    Json(Value),
+    Buffer(bytes::Bytes),
+}
+
+impl HostJavaScriptValue {
+    /// Requires a structured value without converting binary ownership into a value tree.
+    pub fn into_json(self) -> HostResult<Value> {
+        match self {
+            Self::Json(value) => Ok(value),
+            Self::Buffer(_) => Err(HostError::new("This Host operation requires a structured value")),
+        }
+    }
+
+    /// Borrows a structured argument without copying it.
+    pub fn as_json(&self) -> Option<&Value> {
+        match self { Self::Json(value) => Some(value), Self::Buffer(_) => None }
+    }
+}
+
+impl From<Value> for HostJavaScriptValue {
+    /// Preserves the ownership of an existing structured value.
+    fn from(value: Value) -> Self { Self::Json(value) }
+}
+
+impl PartialEq<Value> for HostJavaScriptValue {
+    /// Compares structured arguments without treating buffers as structured values.
+    fn eq(&self, value: &Value) -> bool { self.as_json() == Some(value) }
+}
+
+/// Handles a synchronous operation with structured values or transferred binary ownership.
+pub type HostJavaScriptCallback =
+    Arc<dyn Fn(Vec<HostJavaScriptValue>) -> HostResult<Value> + Send + Sync + 'static>;
 
 /// Supplies one interrupt predicate to a host-owned JavaScript runtime.
 pub type HostJavaScriptInterruptHandler = Arc<dyn Fn() -> bool + Send + Sync + 'static>;
@@ -2079,10 +2111,10 @@ pub trait HostJavaScriptRuntime {
     fn cancelHostJavaScriptPromises(&mut self, scope: &str) -> HostResult<()>;
 
     /// Registers a required synchronous structured binding without JSON text transport.
-    fn registerHostJavaScriptJsonFunction(
+    fn registerHostJavaScriptFunction(
         &mut self,
         name: &str,
-        callback: HostJavaScriptJsonCallback,
+        callback: HostJavaScriptCallback,
     ) -> HostResult<()>;
 }
 

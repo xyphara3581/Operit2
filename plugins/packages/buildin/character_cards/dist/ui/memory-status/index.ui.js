@@ -1,5 +1,7 @@
-// @operit-compose-artifact 2
+// @operit-compose-artifact 4
 "use strict";
+var __operitUiPrograms_=[{"id":"com.operit.character_cards:dist/ui/memory-status/index.ui.js:sj3anc:16730","root":0,"nodes":[{"type":"AlertDialog","props":[2,["key","title","text","confirmText","onConfirm","onDismissRequest"],[[0,"memory-status"],[0,"记忆状态"],[1,0],[0,"关闭"],[1,1],[1,2]]],"children":[0,null],"explicitChildren":false}]}];
+
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -323,7 +325,5 @@ function Screen(ctx) {
   function close() {
     return { type: "toolpkg.presentation.cancel", requestId };
   }
-  return OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/memory-status/index.ui.js:16730",[input.description,close,close],__operitUiTemplate_16730);
+  return OperitComposeComposition.evaluate(ctx,"com.operit.character_cards:dist/ui/memory-status/index.ui.js:16730",__operitUiPrograms_[0],[input.description,close,close]);
 }
-
-function __operitUiTemplate_16730(__ctx,__values){return __ctx.UI.AlertDialog({key:"memory-status",title:"\u8BB0\u5FC6\u72B6\u6001",text:__values[0],confirmText:"\u5173\u95ED",onConfirm:__values[1],onDismissRequest:__values[2]}); }

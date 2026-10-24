@@ -64,6 +64,12 @@ class PastedImageAttachmentPayload {
   }
 }
 
+/// Canonical submit actions returned by the Core chat input hook bridge.
+const String chatInputActionAllow = 'Allow';
+const String chatInputActionBlock = 'Block';
+const String chatInputActionConsume = 'Consume';
+const String chatInputActionReplace = 'Replace';
+
 class ChatInputSubmitDecision {
   const ChatInputSubmitDecision({
     required this.action,
@@ -73,10 +79,20 @@ class ChatInputSubmitDecision {
     required this.timedOut,
   });
 
-  /// Parses the JSON decision returned by the Core ToolPkg chat input bridge.
+  /// Decodes exactly the canonical submit actions declared by the Core bridge.
   factory ChatInputSubmitDecision.fromJson(Map<String, Object?> json) {
+    final action = switch (json['action']) {
+      chatInputActionAllow => chatInputActionAllow,
+      chatInputActionBlock => chatInputActionBlock,
+      chatInputActionConsume => chatInputActionConsume,
+      chatInputActionReplace => chatInputActionReplace,
+      final value => throw FormatException(
+        'Unsupported chat input submit action',
+        value,
+      ),
+    };
     return ChatInputSubmitDecision(
-      action: json['action'] as String,
+      action: action,
       text: json['text'] == null ? null : json['text'] as String,
       message: json['message'] == null ? null : json['message'] as String,
       clearInput: json['clearInput'] == null

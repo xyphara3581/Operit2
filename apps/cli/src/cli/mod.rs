@@ -876,6 +876,7 @@ pub(crate) enum CliInstallProgress {
     Complete,
 }
 
+/// Installs the executable and the runtime assets declared by the host.
 fn install_cli_from_source(
     source: &Path,
     mode: InstallMode,
@@ -900,6 +901,9 @@ fn install_cli_from_source(
         return Ok(());
     }
 
+    for library in host_ops::cli_runtime_libraries() {
+        copy_cli_binary(&source.with_file_name(library), &install_dir.join(library))?;
+    }
     on_progress(CliInstallProgress::CopyOperit);
     copy_cli_binary(source, &operit)?;
     on_progress(CliInstallProgress::CopyOperit2);
@@ -979,6 +983,9 @@ fn uninstall_cli() -> Result<(), String> {
 
     remove_file_if_exists(&operit)?;
     remove_file_if_exists(&operit2)?;
+    for library in host_ops::cli_runtime_libraries() {
+        remove_file_if_exists(&install_dir.join(library))?;
+    }
     remove_cli_install_dir_from_path(&install_dir)?;
 
     if cli_json_mode() {
@@ -1363,19 +1370,21 @@ fn extract_cli_binary_from_package(
     }
 }
 
+/// Extracts the Windows executable together with its required runtime libraries.
 fn extract_cli_binary_from_zip(package_path: &Path, extract_dir: &Path) -> Result<PathBuf, String> {
     let file = fs::File::open(package_path).map_err(|error| error.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|error| error.to_string())?;
-    let mut entry = archive.by_name("operit2.exe").map_err(|error| {
-        format!(
-            "operit2.exe not found in {}: {error}",
-            package_path.display()
-        )
-    })?;
-    let destination = extract_dir.join("operit2.exe");
-    let mut output = fs::File::create(&destination).map_err(|error| error.to_string())?;
-    io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
-    Ok(destination)
+    for name in std::iter::once("operit2.exe")
+        .chain(host_ops::WINDOWS_CLI_RUNTIME_LIBRARIES.iter().copied())
+    {
+        let mut entry = archive.by_name(name).map_err(|error| {
+            format!("{name} not found in {}: {error}", package_path.display())
+        })?;
+        let destination = extract_dir.join(name);
+        let mut output = fs::File::create(&destination).map_err(|error| error.to_string())?;
+        io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
+    }
+    Ok(extract_dir.join("operit2.exe"))
 }
 
 fn extract_cli_binary_from_tar_gz(
@@ -2185,6 +2194,57 @@ fn currentTimeMillis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Creates an isolated Windows package with an optional inference runtime.
+    fn windows_cli_package_fixture(include_runtime: bool) -> (PathBuf, PathBuf) {
+        use std::io::Write;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!("operit-cli-package-{}-{unique}", std::process::id()));
+        let extract_dir = root.join("extracted");
+        fs::create_dir_all(&extract_dir).unwrap();
+        let package = root.join("cli.zip");
+        let mut archive = zip::ZipWriter::new(fs::File::create(&package).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        archive.start_file("operit2.exe", options).unwrap();
+        archive.write_all(b"cli executable").unwrap();
+        if include_runtime {
+            for name in host_ops::WINDOWS_CLI_RUNTIME_LIBRARIES {
+                archive.start_file(*name, options).unwrap();
+                archive.write_all(b"native inference runtime").unwrap();
+            }
+        }
+        archive.finish().unwrap();
+        (package, extract_dir)
+    }
+
+    /// Keeps Windows runtime files beside the extracted executable for installation.
+    #[test]
+    fn windows_cli_package_extracts_its_native_runtime() {
+        let (package, extract_dir) = windows_cli_package_fixture(true);
+        let binary = extract_cli_binary_from_zip(&package, &extract_dir).unwrap();
+        assert_eq!(binary, extract_dir.join("operit2.exe"));
+        assert_eq!(fs::read(binary).unwrap(), b"cli executable");
+        for name in host_ops::WINDOWS_CLI_RUNTIME_LIBRARIES {
+            assert_eq!(
+                fs::read(extract_dir.join(name)).unwrap(),
+                b"native inference runtime"
+            );
+        }
+        fs::remove_dir_all(package.parent().unwrap()).unwrap();
+    }
+
+    /// Rejects Windows packages that cannot load the required native runtime.
+    #[test]
+    fn windows_cli_package_requires_its_native_runtime() {
+        let (package, extract_dir) = windows_cli_package_fixture(false);
+        let error = extract_cli_binary_from_zip(&package, &extract_dir).unwrap_err();
+        assert!(error.starts_with("operit_local_llm.dll not found in "));
+        fs::remove_dir_all(package.parent().unwrap()).unwrap();
+    }
 
     /// Verifies the level-1 help table has unique, described command names.
     #[test]

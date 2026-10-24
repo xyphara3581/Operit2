@@ -1,5 +1,7 @@
-// @operit-compose-artifact 2
+// @operit-compose-artifact 4
 "use strict";
+var __operitUiPrograms_=[{"id":"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:12zb1h8:68942","root":0,"nodes":[{"type":"Box","props":[2,["width","height","contentAlignment"],[[0,32],[0,32],[0,"center"]]],"children":[4,1],"explicitChildren":true},{"type":"Icon","props":[2,["name","size","tint"],[[0,"Person"],[0,24],[1,0]]],"children":[0,null],"explicitChildren":false}]},{"id":"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:12zb1h8:69117","root":0,"nodes":[{"type":"Image","props":[1,0],"children":[0,null],"explicitChildren":false}]},{"id":"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:12zb1h8:69273","root":0,"nodes":[{"type":"Image","props":[1,0],"children":[0,null],"explicitChildren":false}]},{"id":"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:12zb1h8:69423","root":0,"nodes":[{"type":"Box","props":[2,["width","height","contentAlignment"],[[0,32],[0,32],[0,"center"]]],"children":[4,1],"explicitChildren":true},{"type":"Icon","props":[2,["name","size","tint"],[[0,"Person"],[0,24],[1,0]]],"children":[0,null],"explicitChildren":false}]},{"id":"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:12zb1h8:69588","root":0,"nodes":[{"type":"Image","props":[1,0],"children":[0,null],"explicitChildren":false}]},{"id":"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:12zb1h8:69707","root":0,"nodes":[{"type":"Box","props":[2,["width","height","contentAlignment"],[[0,32],[0,32],[0,"center"]]],"children":[4,1],"explicitChildren":true},{"type":"Icon","props":[2,["name","size","tint"],[[0,"SmartToy"],[0,24],[1,0]]],"children":[0,null],"explicitChildren":false}]},{"id":"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:12zb1h8:69904","root":0,"nodes":[{"type":"Box","props":[2,["width","height","contentAlignment"],[[0,32],[0,32],[0,"center"]]],"children":[4,1],"explicitChildren":true},{"type":"Icon","props":[2,["name","size","tint"],[[0,"Groups"],[0,24],[1,0]]],"children":[0,null],"explicitChildren":false}]},{"id":"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:12zb1h8:71820","root":0,"nodes":[{"type":"Text","props":[2,["text","color","paddingHorizontal","paddingVertical"],[[1,0],[1,1],[0,12],[0,6]]],"children":[0,null],"explicitChildren":false}]},{"id":"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:12zb1h8:71954","root":0,"nodes":[{"type":"Box","props":[2,["key","onLoad","modifier","fillMaxWidth","contentAlignment"],[[0,"current-character-loading"],[1,0],[1,1],[0,true],[0,"center"]]],"children":[4,1],"explicitChildren":true},{"type":"CircularProgressIndicator","props":[2,["width","height"],[[0,18],[0,18]]],"children":[0,null],"explicitChildren":false}]},{"id":"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:12zb1h8:72233","root":0,"nodes":[{"type":"Row","props":[2,["key","fillMaxWidth","paddingHorizontal","paddingVertical","verticalAlignment","modifier","onClick"],[[0,"current-character"],[0,true],[0,12],[0,6],[0,"center"],[1,0],[1,1]]],"children":[3,[[1,2],[4,1],[4,2],[4,5]]],"explicitChildren":true},{"type":"Spacer","props":[2,["width"],[[0,10]]],"children":[0,null],"explicitChildren":false},{"type":"Column","props":[2,["weight"],[[0,1]]],"children":[3,[[4,3],[4,4]]],"explicitChildren":true},{"type":"Text","props":[2,["text","style","color"],[[0,"当前角色卡"],[0,"labelSmall"],[1,3]]],"children":[0,null],"explicitChildren":false},{"type":"Text","props":[2,["text","style","color","fontWeight","maxLines","overflow"],[[1,4],[0,"bodySmall"],[1,5],[0,"600"],[0,1],[0,"ellipsis"]]],"children":[0,null],"explicitChildren":false},{"type":"Icon","props":[2,["name","size","tint"],[[0,"ChevronRight"],[0,20],[1,6]]],"children":[0,null],"explicitChildren":false}]}];
+
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -1699,18 +1701,18 @@ function selectedOption(data) {
 function menuAvatar(ctx, option, unboundAvatar) {
   const props = { width: 32, height: 32, contentScale: "crop", modifier: ctx.Modifier.clip({ type: "circle" }) };
   if (option === null) {
-    if (unboundAvatar === null) return OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:68942",[OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69008",[ctx.MaterialTheme.colorScheme.onSurfaceVariant],__operitUiTemplate_69008)],__operitUiTemplate_68942);
-    return OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69117",[{ ...props, path: unboundAvatar, contentDescription: "\u672A\u7ED1\u5B9A" }],__operitUiTemplate_69117);
+    if (unboundAvatar === null) return OperitComposeComposition.evaluate(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:68942",__operitUiPrograms_[0],[ctx.MaterialTheme.colorScheme.onSurfaceVariant]);
+    return OperitComposeComposition.evaluate(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69117",__operitUiPrograms_[1],[{ ...props, path: unboundAvatar, contentDescription: "\u672A\u7ED1\u5B9A" }]);
   }
   switch (option.avatar.type) {
     case "uri":
-      return OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69273",[{ ...props, uri: option.avatar.uri, contentDescription: option.title }],__operitUiTemplate_69273);
+      return OperitComposeComposition.evaluate(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69273",__operitUiPrograms_[2],[{ ...props, uri: option.avatar.uri, contentDescription: option.title }]);
     case "resource":
-      return option.avatar.path === null ? OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69423",[OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69489",[ctx.MaterialTheme.colorScheme.onSurfaceVariant],__operitUiTemplate_69489)],__operitUiTemplate_69423) : OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69588",[{ ...props, path: option.avatar.path, contentDescription: option.title }],__operitUiTemplate_69588);
+      return option.avatar.path === null ? OperitComposeComposition.evaluate(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69423",__operitUiPrograms_[3],[ctx.MaterialTheme.colorScheme.onSurfaceVariant]) : OperitComposeComposition.evaluate(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69588",__operitUiPrograms_[4],[{ ...props, path: option.avatar.path, contentDescription: option.title }]);
     case "model":
-      return OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69707",[OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69773",[ctx.MaterialTheme.colorScheme.onSurfaceVariant],__operitUiTemplate_69773)],__operitUiTemplate_69707);
+      return OperitComposeComposition.evaluate(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69707",__operitUiPrograms_[5],[ctx.MaterialTheme.colorScheme.onSurfaceVariant]);
     case "group":
-      return OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69904",[OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69970",[ctx.MaterialTheme.colorScheme.onSurfaceVariant],__operitUiTemplate_69970)],__operitUiTemplate_69904);
+      return OperitComposeComposition.evaluate(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:69904",__operitUiPrograms_[6],[ctx.MaterialTheme.colorScheme.onSurfaceVariant]);
   }
 }
 function renderChatInputMenu(ctx) {
@@ -1747,41 +1749,20 @@ function renderChatInputMenu(ctx) {
     });
   }
   const colors = ctx.MaterialTheme.colorScheme;
-  if (state.error !== "") return OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:71820",[state.error,colors.error],__operitUiTemplate_71820);
-  if (state.data === null) return OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:71954",[load,ctx.Modifier.heightIn({ minHeight: 48 }),OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:72117",null,__operitUiTemplate_72117)],__operitUiTemplate_71954);
+  if (state.error !== "") return OperitComposeComposition.evaluate(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:71820",__operitUiPrograms_[7],[state.error,colors.error]);
+  if (state.data === null) return OperitComposeComposition.evaluate(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:71954",__operitUiPrograms_[8],[load,({__modifierOps:OperitComposeNodes.modifierBase(ctx.Modifier).concat([{name:"heightIn",args:[{ minHeight: 48 }]}])})]);
   const option = selectedOption(state.data);
-  return OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:72233",[ctx.Modifier.heightIn({ minHeight: 48 }),() => {
+  return OperitComposeComposition.evaluate(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:72233",__operitUiPrograms_[9],[({__modifierOps:OperitComposeNodes.modifierBase(ctx.Modifier).concat([{name:"heightIn",args:[{ minHeight: 48 }]}])}),() => {
       assertOwner();
       return {
         type: "toolpkg.ui.present",
         routeId: chatUiRoutes.selection,
         input: { mode: "select", chatId, kind: "card", selected: option !== null && option.kind !== "group" ? option.selection : null }
       };
-    },menuAvatar(ctx, option, state.unboundAvatar),OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:72884",null,__operitUiTemplate_72884),OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:72918",[OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:72955",[colors.onSurfaceVariant],__operitUiTemplate_72955),OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:73071",[option === null ? "\u672A\u7ED1\u5B9A" : option.title,colors.onSurface],__operitUiTemplate_73071)],__operitUiTemplate_72918),OperitComposeGeneration.template(ctx,"com.operit.character_cards:dist/ui/chat-input-menu/index.ui.js:73259",[colors.onSurfaceVariant],__operitUiTemplate_73259)],__operitUiTemplate_72233);
+    },menuAvatar(ctx, option, state.unboundAvatar),colors.onSurfaceVariant,option === null ? "\u672A\u7ED1\u5B9A" : option.title,colors.onSurface,colors.onSurfaceVariant]);
 }
 
 // src/ui/chat-input-menu/index.ui.ts
 function Screen(ctx) {
   return renderChatInputMenu(ctx);
 }
-
-function __operitUiTemplate_69008(__ctx,__values){return __ctx.UI.Icon({name:"Person",size:24,tint:__values[0]}); }
-function __operitUiTemplate_68942(__ctx,__values){return __ctx.UI.Box({width:32,height:32,contentAlignment:"center"},__values[0]); }
-function __operitUiTemplate_69117(__ctx,__values){return __ctx.UI.Image(__values[0]); }
-function __operitUiTemplate_69273(__ctx,__values){return __ctx.UI.Image(__values[0]); }
-function __operitUiTemplate_69489(__ctx,__values){return __ctx.UI.Icon({name:"Person",size:24,tint:__values[0]}); }
-function __operitUiTemplate_69423(__ctx,__values){return __ctx.UI.Box({width:32,height:32,contentAlignment:"center"},__values[0]); }
-function __operitUiTemplate_69588(__ctx,__values){return __ctx.UI.Image(__values[0]); }
-function __operitUiTemplate_69773(__ctx,__values){return __ctx.UI.Icon({name:"SmartToy",size:24,tint:__values[0]}); }
-function __operitUiTemplate_69707(__ctx,__values){return __ctx.UI.Box({width:32,height:32,contentAlignment:"center"},__values[0]); }
-function __operitUiTemplate_69970(__ctx,__values){return __ctx.UI.Icon({name:"Groups",size:24,tint:__values[0]}); }
-function __operitUiTemplate_69904(__ctx,__values){return __ctx.UI.Box({width:32,height:32,contentAlignment:"center"},__values[0]); }
-function __operitUiTemplate_71820(__ctx,__values){return __ctx.UI.Text({text:__values[0],color:__values[1],paddingHorizontal:12,paddingVertical:6}); }
-function __operitUiTemplate_72117(__ctx,__values){return __ctx.UI.CircularProgressIndicator({width:18,height:18}); }
-function __operitUiTemplate_71954(__ctx,__values){return __ctx.UI.Box({key:"current-character-loading",onLoad:__values[0],modifier:__values[1],fillMaxWidth:true,contentAlignment:"center"},__values[2]); }
-function __operitUiTemplate_72884(__ctx,__values){return __ctx.UI.Spacer({width:10}); }
-function __operitUiTemplate_72955(__ctx,__values){return __ctx.UI.Text({text:"\u5F53\u524D\u89D2\u8272\u5361",style:"labelSmall",color:__values[0]}); }
-function __operitUiTemplate_73071(__ctx,__values){return __ctx.UI.Text({text:__values[0],style:"bodySmall",color:__values[1],fontWeight:"600",maxLines:1,overflow:"ellipsis"}); }
-function __operitUiTemplate_72918(__ctx,__values){return __ctx.UI.Column({weight:1},[__values[0],__values[1]]); }
-function __operitUiTemplate_73259(__ctx,__values){return __ctx.UI.Icon({name:"ChevronRight",size:20,tint:__values[0]}); }
-function __operitUiTemplate_72233(__ctx,__values){return __ctx.UI.Row({key:"current-character",fillMaxWidth:true,paddingHorizontal:12,paddingVertical:6,verticalAlignment:"center",modifier:__values[0],onClick:__values[1]},[__values[2],__values[3],__values[4],__values[5]]); }

@@ -26,7 +26,7 @@ var OperitComposeLazy = function () {
     }
     var version = inputs.current;
     function materializeItem(index) {
-      return OperitComposeGeneration.memoItem(ctx,
+      return OperitComposeReactive.memoItem(ctx,
         'compose:lazy-item:' + key + ':' + index, version,
         function () { return itemBuilder(index); });
     }

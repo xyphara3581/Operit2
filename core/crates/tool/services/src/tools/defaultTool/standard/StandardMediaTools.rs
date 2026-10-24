@@ -161,6 +161,11 @@ fn registration_result(
 }
 
 fn read_vfs_bytes(host: &HostManager, path: &str) -> Result<Vec<u8>, String> {
+    if operit_tools::runtime_support::splitQualifiedVfsPath(path).is_some() {
+        return Err(
+            "media_register_from_path does not support cross-device paths; copy the file to this device first".to_string(),
+        );
+    }
     let file_system = host
         .fileSystemHost
         .clone()

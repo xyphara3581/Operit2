@@ -1198,11 +1198,11 @@ impl EnhancedAIService {
         self.sendMessageWithRuntime(options, runtime).await
     }
 
-    /// Resolves a fresh conversation execution after the native owner-specific canonical record read; historical snapshots use explicit revision resolution.
-    pub async fn resolveChatConfigurationForOptions(
+    /// Builds the canonical request shared by execution and current-participant context estimates.
+    pub fn chatConfigurationRequestForOptions(
         &self,
         options: &SendMessageOptions,
-    ) -> Result<ChatConfigurationResult, AiServiceError> {
+    ) -> Result<ChatConfigurationRequest, AiServiceError> {
         let support = self.provider_runtime_context.support();
         let defaultModelBinding = match (
             options.chatProviderIdOverride.as_ref(),
@@ -1228,20 +1228,28 @@ impl EnhancedAIService {
                 ))
             }
         };
-        support
-            .resolveChatConfiguration(ChatConfigurationRequest {
-                purpose: ChatConfigurationPurpose::Execution,
-                chatId: options.chatId.clone(),
-                // The native API replaces this unresolved field with the selected owner's actual record before invoking the plugin.
-                chatExtension: None,
-                // Fresh execution has no requested historical revision; stored message resolution supplies its exact snapshot separately.
-                participantId: options.executionParticipantId.clone(),
-                promptFunctionType: options.promptFunctionType.clone(),
-                defaultModelBinding,
-                defaultTtsConfigId: support
-                    .defaultTtsConfigId()
-                    .map_err(AiServiceError::RequestFailed)?,
-            })
+        Ok(ChatConfigurationRequest {
+            purpose: ChatConfigurationPurpose::Execution,
+            chatId: options.chatId.clone(),
+            // The native API reads this owner's current canonical conversation record.
+            chatExtension: None,
+            participantId: options.executionParticipantId.clone(),
+            promptFunctionType: options.promptFunctionType.clone(),
+            defaultModelBinding,
+            defaultTtsConfigId: support
+                .defaultTtsConfigId()
+                .map_err(AiServiceError::RequestFailed)?,
+        })
+    }
+
+    /// Resolves a fresh execution from the current conversation binding and explicit participant.
+    pub async fn resolveChatConfigurationForOptions(
+        &self,
+        options: &SendMessageOptions,
+    ) -> Result<ChatConfigurationResult, AiServiceError> {
+        self.provider_runtime_context
+            .support()
+            .resolveChatConfiguration(self.chatConfigurationRequestForOptions(options)?)
             .await
             .map_err(AiServiceError::RequestFailed)
     }

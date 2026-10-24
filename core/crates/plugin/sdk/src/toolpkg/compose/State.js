@@ -115,7 +115,7 @@ var OperitComposeState = function () {
             // are unchanged; cross-session stores still use the old structural
             // representation below.
             if (!changed) {
-              var generated = OperitComposeGeneration.memo(runtime.ctx, memoKey,
+              var generated = OperitComposeReactive.memoValue(runtime.ctx, memoKey,
                 current.generated, false, factory);
               if (current.generated !== generated) {
                 var refreshed = { depsJson: current.depsJson, value: generated.value, generated: generated };
@@ -133,7 +133,7 @@ var OperitComposeState = function () {
           }
           var depsJson = JSON.stringify(values);
           changed = !current || current.depsJson !== depsJson;
-          var generated = OperitComposeGeneration.memo(runtime.ctx, memoKey,
+          var generated = OperitComposeReactive.memoValue(runtime.ctx, memoKey,
             current && current.generated, changed, factory);
           if (!current || current.generated !== generated || current.depsJson !== depsJson) {
             current = { depsJson: depsJson, value: generated.value, generated: generated };

@@ -1375,22 +1375,6 @@ impl ChatServiceCore {
                 .setInputProcessingStateForChat(currentChatId, InputProcessingState::Idle);
             return false;
         }
-        let configuration = match enhancedAiService.resolveChatConfigurationForOptions(
-            &operit_providers::chat::EnhancedAIService::SendMessageOptions {
-                chatId: Some(currentChatId.clone()),
-                ..operit_providers::chat::EnhancedAIService::SendMessageOptions::new()
-            },
-        ).await {
-            Ok(configuration) => configuration,
-            Err(error) => {
-                self.messageProcessingDelegate
-                    .setInputProcessingStateForChat(
-                        currentChatId,
-                        InputProcessingState::Error { message: error.to_string() },
-                    );
-                return false;
-            }
-        };
         let summaryMessage = match AIMessageManager::summarizeMemory(
             &mut enhancedAiService,
             messagesToSummarize,

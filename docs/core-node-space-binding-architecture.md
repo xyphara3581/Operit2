@@ -74,8 +74,9 @@ Space 只负责三件事：
 确定持久化数据应当在哪些 CoreNode 之间持续同步
 ```
 
-Space 不表达执行位置，也不表达数据归属。加入同一 Space 的 CoreNode 都保存完整的
-业务数据副本。
+Space 不表达执行位置，也不表达数据归属。业务副本由具备 `storage.provide` 且实际
+提供 Core 存储服务的成员保存和同步。Edge 的控制状态、自身配置和业务使用边界见
+[Edge 架构](edge-architecture.md)。
 
 ### 2.1 发现与加入
 
@@ -144,7 +145,7 @@ Binding {
 Binding 层不知道 key 是否来自聊天、任务或其他业务对象。聊天路由直接使用现有 `chatId`
 作为 key，但该含义只存在于 Chat 业务代码和方法注解中。Binding 不表示业务数据位于目标
 节点；Agent、聊天、消息、记忆、工具结果、配置和 Binding 本身都由 Space 持久化同步
-服务复制到所有成员。
+服务复制到获准参与业务存储的成员。
 
 同一个 Agent 的不同聊天可以绑定不同 CoreNode。切换 Binding 不会移动 Agent，也不会
 移动其对话。Agent 在当前工具调用上下文中已经拥有 `chatId`，因此切换工具只需要目标
@@ -508,7 +509,7 @@ payload 类型允许在该 Peer Link 上转发
 
 ```text
 一个 CoreNode 只有一个 OperitApplication 和一个 HostManager
-Space 内所有持久化业务数据持续同步
+获准提供 Core 存储服务的 Space 成员之间持续同步持久化业务数据
 Binding 只决定 chat 的下一步执行节点
 Binding 改变不移动数据
 工具结果持久化完成后才能交接下一轮模型调用

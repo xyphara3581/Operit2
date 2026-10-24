@@ -750,7 +750,6 @@ fn assembleRuntimeBootstrapScript() -> String {
                 log: emitIntermediate,
                 update: emitIntermediate,
                 sendIntermediateResult: emitIntermediate,
-                /** Publishes each retained commit immediately on its own command's structured channel. */
                 /** Registers a subscription cleanup for the exact originating call session. */
                 onCleanup: function(cleanup) {{
                     if (typeof cleanup !== 'function') {{ throw new TypeError('Call cleanup must be a function'); }}
@@ -758,12 +757,10 @@ fn assembleRuntimeBootstrapScript() -> String {
                     /** Releases a disposed subscription before its call finishes. */
                     return function() {{ callState.cleanupCallbacks.delete(cleanup); }};
                 }},
+                /** Transfers the sealed Compose allocation on its owning call channel. */
                 sendComposeResponse: function(phase, response) {{
                     if (!isActive()) {{ throw new Error('Compose response owner is no longer active'); }}
-                    __operitNativeSendStructuredIntermediate(callId, {{
-                        phase: phase,
-                        response: __operitNormalizeComposeResult(response)
-                    }});
+                    __operitNativeSendStructuredIntermediate(callId, response);
                 }},
                 reportError: emitError,
                 done: complete,

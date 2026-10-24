@@ -12,7 +12,6 @@ function embedded(name) { return readSdkScript(name); }
 /** Starts a genuine compiled SDK screen in an isolated JS session. */
 function session(source, { forbidCompilation = false, captureLog = null } = {}) {
   const events = [];
-  const nodes = new Map();
   let rootId;
   let revision = 0;
   const context = vm.createContext({ console: captureLog ? { ...console, log: captureLog } : console, module: { exports: {} },
@@ -32,12 +31,11 @@ function session(source, { forbidCompilation = false, captureLog = null } = {}) 
   const fixture = composeStreamFixture(context, { projectTree: false, inspectStorage: false,
     /** Retains every real stream response for storage and revision assertions. */
     onResponse(_phase, response) {
-      events.push(response);
       if (response.update) {
-        for (const node of response.update.upserts) nodes.set(node.id, node);
-        for (const id of response.update.removed) nodes.delete(id);
-        rootId = response.update.rootId;
+        response.nodes = Array.from(fixture.nodes.values());
+        rootId = response.update.root.instanceId + "#" + response.update.root.node;
       }
+      events.push(response);
     },
   });
   let rawAction;
@@ -54,12 +52,12 @@ function session(source, { forbidCompilation = false, captureLog = null } = {}) 
     render(options = {}) { const response = context.__operit_render_compose_dsl({ executionContextKey: 'page-a', ...options }); return response; },
     /** Starts a command while leaving its completion unconsumed, as independent Rust tasks can do. */
     beginAction(name, payload) {
-      const tree = nodes.get(rootId);
+      const tree = fixture.nodes.get(rootId);
       return rawAction({ actionId: tree.props[name].__actionId, payload });
     },
     /** Invokes the currently mounted action from its last delivered node record. */
     async action(name, payload) {
-      const tree = nodes.get(rootId);
+      const tree = fixture.nodes.get(rootId);
       const response = await context.__operit_dispatch_compose_dsl_action({ actionId: tree.props[name].__actionId, payload });
       return response;
     },
@@ -71,6 +69,8 @@ function noSnapshot(response) {
   assert.equal(Object.hasOwn(response, 'memo'), false);
   assert.ok(JSON.stringify(response).length < 10000);
 }
+/** Resolves a transaction root for assertion-only program projections. */
+function rootAddress(update) { return update.root.instanceId + "#" + update.root.node; }
 const screen = `module.exports.default = function(ctx) {
   const [count, setCount] = ctx.useState('count', 0);
   const [object] = ctx.useState('object', { nested: { value: 1 }, list: [1, 2] });
@@ -119,11 +119,11 @@ test('eager and final evaluations preserve asynchronous progress in untracked re
   const action = s.action('wait', false);
   await drainComposeJobs();
   assert.equal(s.context.renderCount, 2);
-  assert.ok(s.events.some(event => event.update.upserts.some(node => node.props.text === '0:pending')));
+  assert.ok(s.events.some(event => event.nodes.some(node => node.props.text === '0:pending')));
   s.context.release();
   const result = await action;
   assert.equal(s.context.renderCount, 3);
-  assert.ok(result.update.upserts.some(node => node.props.text === '0:finished'));
+  assert.ok(result.nodes.some(node => node.props.text === '0:finished'));
 });
 
 test('state progress streams and a host render consumes queued state invalidations', async () => {
@@ -140,12 +140,12 @@ test('state progress streams and a host render consumes queued state invalidatio
     }
     const expected = consumeWithHostRender ? 3 : 2;
     assert.equal(s.context.renderCount, expected, 'consumed state invalidations must not force another root execution');
-    assert.ok(s.events.some(event => event.update.upserts.some(node => node.props.text === '1:pending')),
+    assert.ok(s.events.some(event => event.nodes.some(node => node.props.text === '1:pending')),
       'pending asynchronous actions must still publish their actual state progress');
     s.context.release();
     const result = await action;
     assert.equal(s.context.renderCount, expected + 1);
-    assert.ok(result.update.upserts.some(node => node.props.text === '1:finished'));
+    assert.ok(result.nodes.some(node => node.props.text === '1:finished'));
   }
 });
 
@@ -167,11 +167,11 @@ test('intermediate commits preserve direct node mutations before an asynchronous
   const action = s.action('wait');
   await drainComposeJobs();
   assert.equal(s.context.renderCount, 2);
-  assert.ok(s.events.some(event => event.update.upserts.some(node => node.props.text === 'pending')));
+  assert.ok(s.events.some(event => event.nodes.some(node => node.props.text === 'pending')));
   s.context.release();
   const result = await action;
   assert.equal(s.context.renderCount, 3);
-  assert.ok(result.update.upserts.some(node => node.props.text === 'finished'));
+  assert.ok(result.nodes.some(node => node.props.text === 'finished'));
 });
 
 test('retained responses never read large state or memo, including intermediate events', async () => {
@@ -216,7 +216,7 @@ test('compiled state consumers observe explicit host input updates', () => {
   };`);
   s.render();
   const response = s.render({ __operit_update_inputs: true, __operit_input_state: { label: 'host change' } });
-  assert.ok(response.update.upserts.some(node => node.props.text === 'host change'));
+  assert.ok(response.nodes.some(node => node.props.text === 'host change'));
   noSnapshot(response);
 });
 
@@ -236,8 +236,8 @@ test('host input updates automatically await the current root lifecycle in the s
   assert.equal(s.context.inputCalls.length, 0, 'Initial mounting belongs to onLoad');
   const response = await s.render({ __operit_update_inputs: true, __operit_input_state: { label: 'new chat' } });
   assert.deepEqual(Array.from(s.context.inputCalls), ['new chat']);
-  assert.ok(response.update.upserts.some(node => node.props.text === 'loaded new chat') ||
-    s.events.some(event => event.update?.upserts.some(node => node.props.text === 'loaded new chat')));
+  assert.ok(response.nodes.some(node => node.props.text === 'loaded new chat') ||
+    s.events.some(event => event.nodes?.some(node => node.props.text === 'loaded new chat')));
   noSnapshot(response);
   await s.render({ __operit_update_inputs: true, __operit_input_state: { label: 'second chat' } });
   assert.deepEqual(Array.from(s.context.inputCalls), ['new chat', 'second chat']);
@@ -256,7 +256,7 @@ test('input lifecycle failures reject the input command and keep the live contex
   await assert.rejects(Promise.resolve().then(() => s.render({ __operit_update_inputs: true,
     __operit_input_state: { fail: true } })), /input refresh failed/);
   const response = await s.render({ __operit_update_inputs: true, __operit_input_state: { fail: false } });
-  assert.ok(s.events.some(event => event.update?.upserts.some(node => node.props.text === '1')));
+  assert.ok(s.events.some(event => event.nodes?.some(node => node.props.text === '1')));
   noSnapshot(response);
 });
 
@@ -327,7 +327,7 @@ test('same-entry render refreshes environment-dependent compiled expressions', (
   bundle.ctx.MaterialTheme.colorScheme.primary = '#ff102030';
   const response = s.render();
   assert.equal(s.context.__operit_compose_bundle, bundle);
-  assert.ok(response.update.upserts.some(node => node.props.color === '#ff102030'));
+  assert.ok(response.nodes.some(node => node.props.color === '#ff102030'));
   assert.ok(s.context.OperitComposeReactive.metrics(bundle.ctx).rootRuns >= 2);
 });
 
@@ -355,7 +355,7 @@ function webViewSession() {
 test('WebView interface action survives onLoad intermediate and final retained commits', async () => {
   const {s, commands} = webViewSession(); s.render(); await s.action('onLoad');
   const id = commands[0].payload.object.currentTheme.__actionId;
-  assert.equal(id, '__action_3');
+  assert.match(id, /^__action_[0-9]+$/);
   for (let index = 0; index < 5; index++) {
     const response = await s.context.__operit_dispatch_compose_dsl_action({actionId:id});
     assert.equal(response.actionResult, 'dark'); noSnapshot(response);
@@ -463,9 +463,9 @@ for (const precompiled of [false, true]) {
     const s = session(code, { forbidCompilation: precompiled });
     s.render();
     await s.action('edit', 5);
-    assert.ok(s.events.some(event => event.update?.upserts.some(node => node.props.text === 'Count 5')));
+    assert.ok(s.events.some(event => event.nodes?.some(node => node.props.text === 'Count 5')));
     const result = s.render({ __operit_update_inputs: true, __operit_input_state: { count: 11 } });
-    assert.ok(result.update.upserts.some(node => node.props.text === 'Count 11'));
+    assert.ok(result.nodes.some(node => node.props.text === 'Count 11'));
   });
 }
 
@@ -491,7 +491,7 @@ test('pipeline diagnostics are opt-in and preserve the production retained respo
   assert.deepEqual(JSON.parse(JSON.stringify(first)), JSON.parse(JSON.stringify(second)));
   assert.equal(normalLogs.filter(line => line.includes('compose_pipeline_stage')).length, 0);
   assert.ok(profiledLogs.some(line => line.includes('stage=js-render-sync')));
-  assert.ok(profiledLogs.some(line => line.includes('stage=js-retained-commit')));
+  assert.ok(profiledLogs.some(line => line.includes('stage=js-transaction')));
   assert.ok(profiledLogs.some(line => line.includes('stage=js-send-inclusive')));
   assert.equal(Object.hasOwn(second, 'metrics'), false);
 });
@@ -579,7 +579,7 @@ test('settled asynchronous actions coalesce eager and state work into their fina
   const final = await s.action('edit');
   assert.equal(s.context.renderCount, 2, 'initial and final should each evaluate once');
   assert.equal(s.events.length, 2, 'a settled action has no pending state to stream');
-  assert.equal(final.update.upserts.find(node => node.id === final.update.rootId).props.text, '1:finished');
+  assert.equal(final.nodes.find(node => node.id === rootAddress(final.update)).props.text, '1:finished');
   assert.equal(final.actionResult, 'completed');
   assert.equal(final.update.revision, initial.update.revision + 1);
 });
@@ -606,7 +606,7 @@ test('the final state change after an asynchronous wait is built once', async ()
   s.context.release();
   const final = await action;
   assert.equal(s.context.renderCount, 3, 'completion should build the changed state only once');
-  assert.equal(final.update.upserts.find(node => node.id === final.update.rootId).props.text, '9');
+  assert.equal(final.nodes.find(node => node.id === rootAddress(final.update)).props.text, '9');
   assert.equal(final.actionResult, 'completed');
   assert.equal(s.events.length, 2);
 });

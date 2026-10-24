@@ -56,12 +56,11 @@ var OperitComposeDslRuntime = function () {
       if (next.__operit_call_runtime) runtime.callRuntime = next.__operit_call_runtime;
     };
     runtime.ctx = ctx;
-    OperitComposeGeneration.attach(ctx);
     OperitComposeReactive.attach(ctx, /** Releases the page listener with its composition. */ function () {
       runtime.stateObservers.forEach(/** Releases each call-owned listener on page disposal. */ function (observer) { observer.stop(); });
       runtime.stateObservers.clear();
     });
-    runtime.composition = OperitComposeRetained.create(runtime);
+    runtime.composition = OperitComposeComposition.create(runtime);
     /// Transfers each navigation request to exactly one render response.
     runtime.takeNavigationCommands = function () {
       return runtime.navigationCommands.splice(0);

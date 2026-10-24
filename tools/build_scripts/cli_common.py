@@ -295,6 +295,7 @@ def linux_cross_target_env(target: CliBuildTarget) -> dict[str, str]:
     raise RuntimeError(f"Unsupported Linux cross target: {target.rust_target}")
 
 
+# Builds and packages the CLI together with its required native runtime assets.
 def build_cli_target(
     target: CliBuildTarget,
     use_default_target: bool = False,
@@ -336,6 +337,10 @@ def build_cli_target(
         sign_cli_macos(package_dir / binary_name)
 
     if target.platform == "windows":
+        copy_required_file(
+            binary_source.with_name("operit_local_llm.dll"),
+            package_dir / "operit_local_llm.dll",
+        )
         compress_zip(package_dir, package_path)
     else:
         os.chmod(package_dir / binary_name, 0o755)

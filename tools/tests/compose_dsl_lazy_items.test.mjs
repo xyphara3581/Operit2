@@ -39,8 +39,8 @@ test('compiled lazy items materialize only the requested window and preserve ret
   const initial = list(ui.first);
   assert.equal(initial.children.length, 12);
   assert.equal(initial.props.viewport.itemCount, 500);
-  assert.equal(ui.first.update.upserts.length, 14);
-  const item8 = ui.first.update.upserts.find(record => record.props.key === 'item:8').id;
+  assert.equal(ui.first.update.instances.length, 13);
+  const item8 = ui.first.update.instances.find(record => record.values.includes('item:8')).id;
   const discardedAction = initial.children[0].props.onClick;
   const shifted = await ui.dispatch(initial.props.viewport.onRangeChanged, { firstIndex: 8, lastIndex: 20 });
   const shiftedList = list(shifted);
@@ -48,13 +48,13 @@ test('compiled lazy items materialize only the requested window and preserve ret
   assert.equal(shiftedList.props.viewport.firstIndex, 8);
   assert.equal(shiftedList.children[0].props.text, 'Item 8');
   assert.ok(!shifted.update.removed.includes(item8));
-  assert.ok(!shifted.update.upserts.some(record => record.id === item8));
+  assert.ok(!shifted.update.instances.some(record => record.id === item8));
   const selected = await ui.dispatch(shiftedList.children[0].props.onClick);
   assert.equal(selected.actionResult, 8);
   assert.throws(() => ui.dispatch(discardedAction), /not found/);
   const end = await ui.dispatch(shiftedList.props.viewport.onRangeChanged, { firstIndex: 490, lastIndex: 500 });
   assert.equal(list(end).children.at(-1).props.text, 'Item 499');
-  assert.ok(end.update.upserts.length <= 13);
+  assert.ok(end.update.instances.length <= 13);
 });
 
 /** Reconciles a shorter catalog without retaining out-of-bounds rows or a second callback registry. */
@@ -132,10 +132,10 @@ test('cached lazy windows construct only entering items and rebuild evicted item
   const handles = ui.context.__operit_compose_bundle.composition.metrics();
   const removedAction = initial.children[0].props.onClick;
   const sharedAction = initial.children[8].props.onClick;
-  const sharedId = ui.first.update.upserts.find(record => record.props.key === 'item:8').id;
+  const sharedId = ui.first.update.instances.find(record => record.values.includes('item:8')).id;
   const shifted = await ui.dispatch(initial.props.viewport.onRangeChanged, { firstIndex: 8, lastIndex: 20 });
   assert.equal(ui.context.builderRuns, 20, 'only eight entering items need a builder');
-  assert.ok(!shifted.update.upserts.some(record => record.id === sharedId));
+  assert.ok(!shifted.update.instances.some(record => record.id === sharedId));
   assert.equal(list(shifted).children[0].props.onClick.__actionId, sharedAction.__actionId);
   assert.equal((await ui.dispatch(sharedAction)).actionResult, 8);
   assert.throws(() => ui.dispatch(removedAction), /not found/);
@@ -143,7 +143,7 @@ test('cached lazy windows construct only entering items and rebuild evicted item
   const returned = await ui.dispatch(list(shifted).props.viewport.onRangeChanged, { firstIndex: 0, lastIndex: 12 });
   assert.equal(ui.context.builderRuns, runsBeforeReturn + 8, 'evicted items are rebuilt; four overlapping items stay cached');
   assert.equal((await ui.dispatch(list(returned).children[0].props.onClick)).actionResult, 0);
-  assert.ok(ui.context.__operit_compose_bundle.composition.metrics().removedNodes > handles.removedNodes);
+  assert.ok(ui.context.__operit_compose_bundle.composition.metrics().releasedInstances > handles.releasedInstances);
 });
 
 /** Each item owns its effects even when a shifted window skips overlapping builders. */
@@ -198,7 +198,7 @@ test('cached overlap keeps unkeyed descendants and callbacks on their original r
   const action = first.tree.props.viewport.onRangeChanged.__actionId;
   const shared = first.tree.children[2].children[0].props.onClick.__actionId;
   const shifted = await context.__operit_dispatch_compose_dsl_action({actionId:action, payload:{firstIndex:2,lastIndex:14}});
-  assert.equal(shifted.update.upserts.length, 5, 'only two new two-node rows and the root are sent');
+  assert.equal(shifted.update.instances.length, 3, 'only two new row instances and the list root are sent');
   assert.deepEqual(Array.from(shifted.tree.children, node => node.children[0].props.text),
     Array.from({length:12}, (_, index) => 'row ' + (index + 2)));
   assert.equal(shifted.tree.children[0].children[0].props.onClick.__actionId, shared);

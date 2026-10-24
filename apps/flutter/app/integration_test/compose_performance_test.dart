@@ -263,6 +263,7 @@ void main() {
         await clients.chatRuntimeHolderMain.createNewChat(
           setAsCurrentChat: false,
           sourceChatId: null,
+          parentChatId: null,
           input: {
             package: {'version': 1, 'selection': 'card:${(card as Map)['id']}'},
           },
@@ -411,9 +412,8 @@ void main() {
                 'startedWallMicros': startedWallMicros,
                 'finishedWallMicros': finishedWallMicros,
                 'log': log,
-                if (webTiming != null) 'webTiming': webTiming,
-                if (renderedRoleLabels != null)
-                  'renderedRoleLabels': renderedRoleLabels,
+                'webTiming': ?webTiming,
+                'renderedRoleLabels': ?renderedRoleLabels,
                 'imageWidgets': images.length,
                 'uniqueMemoryImages': memoryImages.length,
                 'uniqueVfsImages': vfsImages.length,

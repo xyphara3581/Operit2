@@ -282,7 +282,7 @@ test('expanded conversations are complete Column content without viewport callba
   assert.equal(screen.calls.length, calls, 'Local expansion must not read authoritative catalogs or resources');
   assert.equal(screen.events.length - before, 1, 'A synchronous toggle must render only its final commit');
   const update = screen.events[before].response.update;
-  assert.ok(update.upserts.every(node => node.id.length < 12), 'Transport handles must not carry ancestor paths');
+  assert.ok(update.instances.every(node => node.id.length < 12), 'Transport handles must not carry ancestor paths');
   assert.ok(JSON.stringify(update).length < chats.length * 6500, 'Expanded updates must stay within a linear per-chat transport budget');
   const collapsed = await screen.click(expanded.tree, 'sidebar-preview-ungrouped:card:travel');
   assert.equal(composeNodes(collapsed.tree, node => /^sidebar-chat-c\d+$/.test(node.props.key ?? '')).length, 4);

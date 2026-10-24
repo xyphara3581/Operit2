@@ -15,6 +15,8 @@ var OperitComposeReactive = function () {
       root: null,
       entry: null,
       effects: new Map(),
+      epoch: 0,
+      scope: null,
       metrics: {
         rootRuns: 0,
         bindingRuns: 0,
@@ -65,6 +67,8 @@ var OperitComposeReactive = function () {
     var previous = graph.current;
     graph.current = task;
     task.counts.clear();
+    task.sourceCounts = new Map();
+    task.hasNodes = false;
     var used = new Set();
     task.usedChildren = used;
     var usedEffects = new Set();
@@ -72,6 +76,13 @@ var OperitComposeReactive = function () {
     try {
       var value = task.execute();
       graph.dirty.delete(task);
+      if (task.sources) task.sources.forEach(
+      /// Releases source slots omitted by the current branch or shortened repetition.
+      function (entries, site) {
+        var count = task.sourceCounts.get(site) || 0;
+        entries.length = count;
+        if (count === 0) task.sources.delete(site);
+      });
       task.children.forEach(
       /// Disposes inactive branch and loop units after their parent completed successfully.
       function (child) {
@@ -194,31 +205,72 @@ var OperitComposeReactive = function () {
     }, 'binding').value;
   }
 
-  /// Preserves node identity while updating its constructor arguments in a subscribed UI unit.
-  function expression(frame, site, dependencies, argumentsFactory, factory, template) {
-    OperitComposeGeneration.created(frame.ctx);
-    var graph = graphs.get(frame.ctx);
-    var owner = graph.current;
+  /// Selects one source slot in the current lexical execution unit without node snapshots.
+  function scope(ctx, site) {
+    var graph = graphs.get(ctx);
+    var task = graph.current;
+    if (!task) return {};
+    if (!task.sources) task.sources = new Map();
+    if (!task.sourceCounts) task.sourceCounts = new Map();
+    var index = task.sourceCounts.get(site) || 0;
+    task.sourceCounts.set(site, index + 1);
+    var entries = task.sources.get(site);
+    if (!entries) { entries = []; task.sources.set(site, entries); }
+    if (!entries[index]) entries[index] = {};
+    return entries[index];
+  }
+
+  /// Marks source-producing memo units for module-replacement invalidation.
+  function created(ctx) {
+    var graph = graphs.get(ctx);
+    for (var task = graph && graph.current; task; task = task.parent) task.hasNodes = true;
+  }
+
+  /// Evaluates one fused layout and publishes only its dynamic instance parameters.
+  function expressionProgram(frame, site, dependencies, valuesFactory, program) {
+    var graph = graphs.get(frame.ctx), owner = graph.current;
     var task = unit(frame.ctx, site, dependencies,
-    /// Evaluates only this UI expression and records its actual recomposition count.
+    /// Runs JavaScript business expressions without expanding internal layout instructions.
     function () {
       graph.metrics.expressionRuns += 1;
-      if (!this.entry) this.entry = {
-        initialized: false
-      };
-      return template
-        ? OperitComposeGeneration.evaluateTemplate(this.entry, frame.ctx, argumentsFactory(), factory)
-        : OperitComposeGeneration.evaluate(this.entry, argumentsFactory(), factory);
+      return OperitComposeComposition.evaluate(frame.ctx, site, program, valuesFactory());
     }, 'expression');
-    // Parent constructors need a child subscription only if the child replaces its handle.
     var dependency = 'unit:' + task.key;
     if (!owner.dependencies.has(dependency)) subscribe(graph, owner, Array.from(owner.dependencies).concat(dependency));
     return task.value;
   }
 
-  /// Uses the same dependency task ownership for compiler-hoisted UI templates.
-  function expressionTemplate(frame, site, dependencies, valuesFactory, factory) {
-    return expression(frame, site, dependencies, valuesFactory, factory, true);
+  /// Tracks dependency reads for runtime-defined argument iteration in the same scheduler.
+  function expressionDynamic(frame, site, dependencies, evaluate) {
+    var graph = graphs.get(frame.ctx), parent = graph.current;
+    var task = unit(frame.ctx, site, dependencies, evaluate, 'expression');
+    var dependency = 'unit:' + task.key;
+    if (!parent.dependencies.has(dependency)) subscribe(graph, parent, Array.from(parent.dependencies).concat(dependency));
+    return task.value;
+  }
+
+  /// Owns memo values and source-reload epochs in the existing dependency scheduler.
+  function memoValue(ctx, key, previous, changed, factory) {
+    var graph = graphs.get(ctx), parent = graph.current;
+    var reusable = !changed && previous && (!previous.hasNodes || previous.epoch === graph.epoch);
+    return memo(ctx, key, reusable,
+    /// Preserves plain-data identity while rebuilding node-producing memos after source replacement.
+    function () {
+      if (reusable && !previous.hasNodes) return previous;
+      var value = factory();
+      var task = graph.current;
+      return { value: value, hasNodes: !!(task && task.hasNodes), epoch: graph.epoch };
+    });
+  }
+
+  /// Retains each requested lazy item in its own ordinary memo execution unit.
+  function memoItem(ctx, key, version, factory) {
+    var graph = graphs.get(ctx);
+    var state = scope(ctx, '@item:' + key);
+    var cached = state.item;
+    var result = memoValue(ctx, '@item:' + key, cached && cached.generated, !cached || cached.version !== version, factory);
+    state.item = { version: version, generated: result };
+    return result.value;
   }
 
   /// Executes the initial entry once, then drains only dependency-indexed execution units.
@@ -230,6 +282,7 @@ var OperitComposeReactive = function () {
     if (graph.entry !== entry) {
       dispose(ctx);
       graph.entry = entry;
+      graph.epoch += 1;
       graph.root = {
         key: 'root',
         order: graph.sequence++,
@@ -239,26 +292,8 @@ var OperitComposeReactive = function () {
         /// Executes the original entry as an explicitly subscribed root unit.
         execute: function () {
           graph.metrics.rootRuns += 1;
-          OperitComposeGeneration.begin(ctx, entry);
-          try {
-            var value = entry(ctx);
-            if (value && typeof value.then === 'function') return value.then(
-            /// Completes generation ownership after an asynchronous root resolves.
-            function (tree) {
-              OperitComposeGeneration.end(ctx);
-              return tree;
-            },
-            /// Releases generation bookkeeping before propagating asynchronous failure.
-            function (error) {
-              OperitComposeGeneration.end(ctx);
-              throw error;
-            });
-            OperitComposeGeneration.end(ctx);
-            return value;
-          } catch (error) {
-            OperitComposeGeneration.end(ctx);
-            throw error;
-          }
+
+          return entry(ctx);
         },
         children: new Set(),
         kind: 'root'
@@ -357,8 +392,12 @@ var OperitComposeReactive = function () {
     frame: frame,
     state: state,
     derived: derived,
-    expression: expression,
-    expressionTemplate: expressionTemplate,
+    expressionProgram: expressionProgram,
+    expressionDynamic: expressionDynamic,
+    scope: scope,
+    created: created,
+    memoValue: memoValue,
+    memoItem: memoItem,
     invalidateRoot: invalidateRoot,
     invalidateViewport: invalidateViewport,
     invalidateContent: invalidateContent,

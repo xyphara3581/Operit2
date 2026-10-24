@@ -427,7 +427,7 @@ test('page bootstrap owns no compiler and precompiled factories bypass shared lo
     __operitNativePrepareComposeModule() { throw Error('Artifact attempted source lowering'); },
   });
   assert.equal(vm.runInContext('typeof __operitAcorn + ":" + typeof OperitComposeCompiler', context), 'undefined:undefined');
-  const source = '// @operit-compose-artifact 1\nexports.run = function() { return 7; };';
+  const source = '// @operit-compose-artifact 4\nexports.run = function() { return 7; };';
   const factory = context.__operitGetFactory('main', 'pkg:artifact', source, true);
   const module = { exports: {} };
   factory(module, module.exports, () => { throw Error('Unexpected require'); }, {});

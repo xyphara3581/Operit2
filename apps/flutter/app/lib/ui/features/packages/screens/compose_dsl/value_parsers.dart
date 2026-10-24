@@ -584,25 +584,6 @@ List<Map<String, Object?>> _canvasCommands(Object? raw) {
   return raw.whereType<Map>().map(_stringMap).toList(growable: false);
 }
 
-/// Resolves node list for the Compose DSL renderer.
-List<_ComposeDslNode> _nodeList(Object? raw) {
-  if (raw is List) {
-    return raw
-        .map(_ComposeDslNode.parse)
-        .whereType<_ComposeDslNode>()
-        .toList(growable: false);
-  }
-  return const <_ComposeDslNode>[];
-}
-
-/// Resolves slot map for the Compose DSL renderer.
-Map<String, List<_ComposeDslNode>> _slotMap(Object? raw) {
-  if (raw is Map) {
-    return raw.map((key, value) => MapEntry(key.toString(), _nodeList(value)));
-  }
-  return const <String, List<_ComposeDslNode>>{};
-}
-
 /// Resolves string for the Compose DSL renderer.
 String _string(Object? raw) => raw?.toString() ?? '';
 

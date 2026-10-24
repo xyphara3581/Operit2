@@ -21,7 +21,7 @@ use operit_host_api::HostManager::{
 use operit_host_api::TimeUtils::currentTimeMillisU128;
 use operit_host_api::{
     HostError, HostErrorKind, HostJavaScriptAsyncJsonCallback, HostJavaScriptExecutionInterrupt,
-    HostJavaScriptInterruptHandler, HostJavaScriptJsonCallback, HostJavaScriptRuntime,
+    HostJavaScriptInterruptHandler, HostJavaScriptCallback, HostJavaScriptRuntime,
     HostJavaScriptRuntimeHost, HostJavaScriptRuntimeStateHandle, HostJavaScriptRuntimeStateOutput,
     HostResult, HostRuntimeTaskSchedulerHost,
 };
@@ -40,7 +40,7 @@ use operit_plugin_sdk::toolpkg::ToolPkgApiRuntimeScript::buildToolPkgApiRuntimeS
 use operit_plugin_sdk::toolpkg::ToolPkgRegistrationBridge::buildToolPkgRegistrationBridgeScript;
 use operit_util::AppLogger::AppLogger;
 
-const TAG: &str = "OperitQuickJsEngine";
+const TAG: &str = "OperitJsEngine";
 /// Returns control to ready promise jobs even when a host-callback wake is lost.
 const PROMISE_JOB_PUMP_MILLIS: u64 = 200;
 type ToolPkgTextResources = BTreeMap<String, String>;
@@ -59,9 +59,9 @@ thread_local! {
     static CURRENT_ACTIVE_CALL_CONTEXTS: RefCell<BTreeMap<String, JsCallContext>> = RefCell::new(BTreeMap::new());
     static CURRENT_EXECUTION_HOST: RefCell<Option<Arc<dyn JsExecutionHost>>> = RefCell::new(None);
     static CURRENT_REGISTRATION_CONFIG_PARAMS: RefCell<Option<BTreeMap<String, Value>>> = RefCell::new(None);
-    static CURRENT_INTERMEDIATE_CALLBACK: RefCell<Option<Arc<dyn Fn(Value) + Send + Sync>>> = RefCell::new(None);
+    static CURRENT_INTERMEDIATE_CALLBACK: RefCell<Option<Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>>> = RefCell::new(None);
     static CURRENT_EXECUTION_LISTENER: RefCell<Option<JsExecutionListenerRef>> = RefCell::new(None);
-    static CURRENT_DETACHED_INTERMEDIATE_CALLBACKS: RefCell<BTreeMap<String, Arc<dyn Fn(Value) + Send + Sync>>> =
+    static CURRENT_DETACHED_INTERMEDIATE_CALLBACKS: RefCell<BTreeMap<String, Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>>> =
         RefCell::new(BTreeMap::new());
     static CURRENT_ENV_OVERRIDES: RefCell<BTreeMap<String, String>> = RefCell::new(BTreeMap::new());
     static CURRENT_CALL_RESULTS: RefCell<BTreeMap<String, JsExecutionResult<Value>>> = RefCell::new(BTreeMap::new());
@@ -116,7 +116,7 @@ enum JsTextResourceSource {
 struct JsCallContext {
     interrupt: HostJavaScriptExecutionInterrupt,
     executionHost: Option<Arc<dyn JsExecutionHost>>,
-    intermediateCallback: Option<Arc<dyn Fn(Value) + Send + Sync>>,
+    intermediateCallback: Option<Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>>,
     executionListener: Option<JsExecutionListenerRef>,
     envOverrides: Arc<Mutex<BTreeMap<String, String>>>,
     textResourceSource: JsTextResourceSource,
@@ -224,7 +224,7 @@ struct JsScriptRequest {
     functionName: String,
     params: BTreeMap<String, Value>,
     envOverrides: BTreeMap<String, String>,
-    onIntermediateResult: Option<Arc<dyn Fn(Value) + Send + Sync>>,
+    onIntermediateResult: Option<Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>>,
     timeout: Option<Duration>,
     interrupt: HostJavaScriptExecutionInterrupt,
     executionListener: Option<JsExecutionListenerRef>,
@@ -313,7 +313,7 @@ impl JsEngineWorker {
         let asyncCallbackWakeEnabledForState = asyncCallbackWakeEnabled.clone();
         let stateHandle = runtimeHost
             .createHostJavaScriptRuntimeState(
-                "OperitQuickJsEngine",
+                "OperitJsEngine",
                 operit_host_api::HostJavaScriptRuntimeStateKind::Execution,
                 Box::new(move || {
                     let runtime = runtimeHostForState.createHostJavaScriptRuntime()?;
@@ -451,7 +451,7 @@ impl JsEngineWorker {
         functionName: String,
         params: BTreeMap<String, Value>,
         envOverrides: BTreeMap<String, String>,
-        on_intermediate_result: Option<Arc<dyn Fn(Value) + Send + Sync>>,
+        on_intermediate_result: Option<Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>>,
         _dispatchIntermediateOnMain: bool,
         timeout: Option<Duration>,
         executionListener: Option<JsExecutionListenerRef>,
@@ -944,7 +944,7 @@ impl JsEngine {
         payload: Option<Value>,
         runtimeOptions: BTreeMap<String, Value>,
         envOverrides: BTreeMap<String, String>,
-        on_response: Arc<dyn Fn(Value) + Send + Sync>,
+        on_response: Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>,
     ) -> JsExecutionFuture<JsExecutionResult<Option<Value>>> {
         let normalizedActionId = actionId.trim().to_string();
         if normalizedActionId.is_empty() {
@@ -976,7 +976,7 @@ impl JsEngine {
         runtimeOptions: BTreeMap<String, Value>,
         envOverrides: BTreeMap<String, String>,
         textResources: Arc<ToolPkgTextResources>,
-        onResponse: Arc<dyn Fn(Value) + Send + Sync>,
+        onResponse: Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>,
     ) -> JsExecutionFuture<JsExecutionResult<Option<Value>>> {
         self.executeComposeDslFunctionAsync(
             script, "__operit_render_compose_dsl".into(),
@@ -992,7 +992,7 @@ impl JsEngine {
         functionName: String,
         params: BTreeMap<String, Value>,
         envOverrides: BTreeMap<String, String>,
-        onIntermediateResult: Option<Arc<dyn Fn(Value) + Send + Sync>>,
+        onIntermediateResult: Option<Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>>,
         textResources: Option<Arc<ToolPkgTextResources>>,
     ) -> JsExecutionFuture<JsExecutionResult<Option<Value>>> {
         self.worker.execute_script_function_async(
@@ -1719,7 +1719,7 @@ impl JsEngineState {
         Ok(())
     }
 
-    /// Retains the callback context while a JavaScript call owns detached timers.
+    /// Retains the callback context while a call owns pending Promise reactions or host work.
     fn rememberDetachedCallContext(
         &mut self,
         pending: &JsPendingScriptExecution,
@@ -1907,7 +1907,7 @@ impl JsEngineState {
         ];
         for name in syncNames {
             self.runtime
-                .registerHostJavaScriptJsonFunction(
+                .registerHostJavaScriptFunction(
                     name,
                     Arc::new(move |arguments| executeHostOperation(name, arguments)),
                 )
@@ -2202,7 +2202,7 @@ impl JsEngineState {
         }
         let cancellationSink = asyncCallbackSink.clone();
         self.runtime
-            .registerHostJavaScriptJsonFunction(
+            .registerHostJavaScriptFunction(
                 "__operitNativeCancelJavaScriptPromises",
                 Arc::new(move |arguments| {
                     let [scope] = exactHostJavaScriptJsonArguments(
@@ -2235,8 +2235,9 @@ impl JsEngineState {
 #[allow(non_snake_case)]
 fn exactHostJavaScriptJsonArguments<const N: usize>(
     name: &str,
-    arguments: Vec<Value>,
+    arguments: Vec<impl Into<operit_host_api::HostJavaScriptValue>>,
 ) -> HostResult<[Value; N]> {
+    let arguments = arguments.into_iter().map(|value| value.into().into_json()).collect::<HostResult<Vec<_>>>()?;
     let count = arguments.len();
     arguments
         .try_into()
@@ -2541,7 +2542,7 @@ fn clearThreadLocalCallState() {
     });
 }
 
-/// Installs one engine-owned call context for the next QuickJS execution step.
+/// Installs one engine-owned call context for the next Host JavaScript execution step.
 #[allow(non_snake_case)]
 fn installThreadLocalCallContext(context: &JsCallContext) {
     CURRENT_EXECUTION_HOST.with(|host| {
@@ -2756,7 +2757,7 @@ impl JsExecutionEngine for JsEngine {
     fn execute_compose_dsl_script_stream_async(
         &self, script: String, runtime_options: BTreeMap<String, Value>,
         env_overrides: BTreeMap<String, String>, text_resources: Arc<ToolPkgTextResources>,
-        on_response: Arc<dyn Fn(Value) + Send + Sync>,
+        on_response: Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>,
     ) -> JsExecutionFuture<JsExecutionResult<Option<Value>>> {
         JsEngine::execute_compose_dsl_script_stream_async(self, script, runtime_options, env_overrides, text_resources, on_response)
     }
@@ -2769,7 +2770,7 @@ impl JsExecutionEngine for JsEngine {
         payload: Option<Value>,
         runtimeOptions: BTreeMap<String, Value>,
         envOverrides: BTreeMap<String, String>,
-        on_response: Arc<dyn Fn(Value) + Send + Sync>,
+        on_response: Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>,
     ) -> JsExecutionFuture<JsExecutionResult<Option<Value>>> {
         JsEngine::dispatch_compose_dsl_action_stream_async(
             self,
@@ -2804,7 +2805,7 @@ fn deliverIntermediateResult(callId: String, result: String) -> HostResult<()> {
         listener.on_intermediate_result(&callId, &result);
     }
     if let Some(callback) = context.intermediateCallback {
-        callback(Value::String(result));
+        callback(Value::String(result).into());
     }
     Ok(())
 }
@@ -2827,15 +2828,15 @@ fn textScriptResult(result: JsExecutionResult<Option<Value>>) -> JsExecutionResu
 }
 
 /// Preserves text callbacks for ordinary scripts while keeping the internal channel structured.
-fn textIntermediateCallback(callback: Option<Arc<dyn Fn(String) + Send + Sync>>) -> Option<Arc<dyn Fn(Value) + Send + Sync>> {
+fn textIntermediateCallback(callback: Option<Arc<dyn Fn(String) + Send + Sync>>) -> Option<Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>> {
     callback.map(|callback| Arc::new(move |value| {
-        let Value::String(text) = value else { panic!("Text intermediate callback received a structured value"); };
+        let operit_host_api::HostJavaScriptValue::Json(Value::String(text)) = value else { panic!("Text intermediate callback received a non-text value"); };
         callback(text);
-    }) as Arc<dyn Fn(Value) + Send + Sync>)
+    }) as Arc<dyn Fn(operit_host_api::HostJavaScriptValue) + Send + Sync>)
 }
 
 /// Delivers DSL values to their active or detached execution owner without JSON text.
-fn sendStructuredIntermediate(callId: &str, value: Value) {
+fn sendStructuredIntermediate(callId: &str, value: operit_host_api::HostJavaScriptValue) {
     let active = CURRENT_ACTIVE_CALL_CONTEXTS.with(|contexts| contexts.borrow().get(callId).and_then(|context| context.intermediateCallback.clone()));
     let detached = CURRENT_DETACHED_INTERMEDIATE_CALLBACKS.with(|callbacks| callbacks.borrow().get(callId).cloned());
     match (active, detached) {
@@ -2846,7 +2847,16 @@ fn sendStructuredIntermediate(callId: &str, value: Value) {
 }
 
 #[allow(non_snake_case)]
-fn executeHostOperation(name: &str, arguments: Vec<Value>) -> HostResult<Value> {
+fn executeHostOperation(name: &str, arguments: Vec<impl Into<operit_host_api::HostJavaScriptValue>>) -> HostResult<Value> {
+    use operit_host_api::HostJavaScriptValue;
+    let arguments: Vec<HostJavaScriptValue> = arguments.into_iter().map(Into::into).collect();
+    if name == "__operitNativeSendStructuredIntermediate" {
+        let [call_id, value]: [_; 2] = arguments.try_into().map_err(|_| HostError::new("Compose response requires its owner and one binary frame"))?;
+        let call_id = hostJavaScriptStringArgument(call_id.into_json()?)?;
+        sendStructuredIntermediate(&call_id, value);
+        return Ok(Value::Null);
+    }
+    let arguments = arguments.into_iter().map(HostJavaScriptValue::into_json).collect::<HostResult<Vec<_>>>()?;
     if name == "__operitNativeActivateCall" {
         let [callId, cancelled] = exactHostJavaScriptJsonArguments(name, arguments)?;
         let callId = hostJavaScriptStringArgument(callId)?;
@@ -2873,11 +2883,6 @@ fn executeHostOperation(name: &str, arguments: Vec<Value>) -> HostResult<Value> 
             CURRENT_CALL_RESULTS.with(|results| {
                 results.borrow_mut().insert(callId, Ok(value));
             });
-            Ok(Value::Null)
-        }
-        "__operitNativeSendStructuredIntermediate" => {
-            let [callId, value] = exactHostJavaScriptJsonArguments(name, arguments)?;
-            sendStructuredIntermediate(&hostJavaScriptStringArgument(callId)?, value);
             Ok(Value::Null)
         }
         "__operitNativeGetPluginLocalDataDir" | "__operitNativeGetPluginSpaceDataDir" => {

@@ -1,3 +1,5 @@
+import 'package:operit2/core/compose/compose_program_buffer.dart' show ToolPkgComposeDslInstance;
+import 'support/compose_program_fixture.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:operit2/core/logging/ClientLogger.dart';
@@ -5,12 +7,12 @@ import 'package:operit2/core/proxy/generated/CoreProxyModels.g.dart';
 import 'package:operit2/ui/features/packages/screens/ToolPkgComposeDslWebView.dart';
 import 'package:operit2/ui/features/packages/screens/ToolPkgUiLauncherScreen.dart';
 
-ToolPkgComposeDslNodeRecord record(
+ToolPkgComposeDslInstance record(
   String id,
   String type, {
   Map<String, Object?> props = const {},
   List<String> children = const [],
-}) => ToolPkgComposeDslNodeRecord(
+}) => composeTestInstance(
   id: id,
   nodeType: type,
   props: {'key': id, ...props},
@@ -18,13 +20,14 @@ ToolPkgComposeDslNodeRecord record(
   slots: const {},
 );
 
+/// Runs native layout and lifetime regressions against program transactions.
 void main() {
   setUpAll(ClientLogger.initialize);
 
   testWidgets(
-    'long press then pin closes a dirty retained dialog without using disposed nodes',
+    'long press then pin closes a dirty program dialog without using disposed nodes',
     (tester) async {
-      late void Function(ToolPkgComposeDslNodeUpdate) apply;
+      late void Function(ToolPkgComposeDslTransaction) apply;
       late VoidCallback dispose;
       var revision = 0;
       var pinned = false;
@@ -46,19 +49,19 @@ void main() {
           },
         ),
       ];
-      ToolPkgComposeDslNodeRecord root({bool dialog = false}) =>
+      ToolPkgComposeDslInstance root({bool dialog = false}) =>
           record('root', 'Column', children: ['chat', if (dialog) 'dialog']);
-      ToolPkgComposeDslNodeUpdate update(
-        List<ToolPkgComposeDslNodeRecord> records, [
+      ToolPkgComposeDslTransaction update(
+        List<ToolPkgComposeDslInstance> records, [
         List<String> removed = const [],
-      ]) => ToolPkgComposeDslNodeUpdate(
+      ]) => composeTestTransaction(
         reset: revision == 0,
         revision: ++revision,
-        rootId: 'root',
-        upserts: records,
+        rootInstanceId: 'root',
+        instances: records,
         removed: removed,
       );
-      final layout = buildRetainedComposeDslLayoutForTest(
+      final layout = buildComposeProgramLayoutForTest(
         update: update([
           root(),
           record(

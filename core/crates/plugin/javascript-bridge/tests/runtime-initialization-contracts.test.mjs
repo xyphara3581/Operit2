@@ -66,7 +66,7 @@ test("captured canonical clone shares connection and lease state with Core gener
 /** Confirms current-conversation requests use native canonical hydration while history requests retain their exact stored revision source. */
 test("EnhancedAI request matches extension schema and does not manufacture historical identity", () => {
   const enhanced = source("core/crates/provider/services/src/chat/EnhancedAIService.rs");
-  const current = region(enhanced, "pub async fn resolveChatConfigurationForOptions(", "    /// Resumes model processing");
+  const current = region(enhanced, "pub fn chatConfigurationRequestForOptions(", "    /// Resolves a fresh execution");
   assert.doesNotMatch(current, /selection:|roleName|roleCardId|characterName|unwrap_or_default|Map::new|json!\(\{\}\)/);
   assert.match(current, /chatExtension: None/);
   assert.doesNotMatch(current, /messageExtension:|executionData:/);
@@ -78,7 +78,7 @@ test("EnhancedAI request matches extension schema and does not manufacture histo
   // The native model binding is the sole shorthand field in this actual constructor.
   assert.deepEqual([...actualFields, "defaultModelBinding"].sort(), requiredFields.sort());
   const provider = source("core/crates/runtime/application/src/services/ProviderRuntimeSupportService.rs");
-  const resolution = region(provider, "pub async fn resolve(", "    /// Resolves display data for a creation draft");
+  const resolution = region(provider, "pub async fn resolve(", "    /// Resolves every currently bound participant");
   assert.match(resolution, /request\.requirePurpose\(ChatConfigurationPurpose::Execution\)\?/);
   assert.match(resolution, /self\.invokeResolve\(request\)\.await/);
   assert.doesNotMatch(provider, /readConversationExtension|storeSnapshot|readSnapshot/);

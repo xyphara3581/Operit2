@@ -30,41 +30,55 @@ use std::sync::OnceLock;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
-/// Retains real streamed records solely to support existing tree-oriented assertions.
+#[path = "../../../../../tool/services/src/tools/packTool/ToolPkgComposeDslProtocol.rs"]
+mod ToolPkgComposeDslProtocol;
+#[path = "../../../../../tool/services/src/tools/packTool/ToolPkgComposeDslProgramStore.rs"]
+mod ToolPkgComposeDslProgramStore;
+
+/// Uses the production program interpreter for tree-oriented behavior assertions.
 #[derive(Default)]
 struct AssertionGraph {
-    nodes: BTreeMap<String, Value>,
-    root: Option<String>,
-    revision: u64,
+    store: ToolPkgComposeDslProgramStore::ToolPkgComposeDslProgramStore,
 }
 
 impl AssertionGraph {
-    /// Applies the real stream protocol before projecting an assertion tree.
-    fn accept(&mut self, response: &Value) {
-        assert!(response.get("tree").is_none() && response.get("state").is_none() && response.get("memo").is_none());
-        if let Some(update) = response.get("update") {
-            if update["reset"] == true { self.nodes.clear(); }
-            else { assert_eq!(update["revision"].as_u64().unwrap(), self.revision + 1); }
-            self.revision = update["revision"].as_u64().unwrap();
-            for node in update["upserts"].as_array().unwrap() { self.nodes.insert(node["id"].as_str().unwrap().into(), node.clone()); }
-            for id in update["removed"].as_array().unwrap() { self.nodes.remove(id.as_str().unwrap()); }
-            self.root = Some(update["rootId"].as_str().unwrap().into());
+    /// Applies the binary arena before projecting only the fields needed by assertions.
+    fn accept(&mut self, envelope: operit_host_api::HostJavaScriptValue) -> (bool, Value) {
+        let operit_host_api::HostJavaScriptValue::Buffer(bytes) = envelope else { panic!("Expected Compose buffer") };
+        let arena = ToolPkgComposeDslProtocol::ComposeBuffer::new(&bytes).unwrap();
+        let mut response = serde_json::json!({"navigationCommands": arena.navigation().unwrap()});
+        if let Some(result) = arena.action_result().unwrap() { response["actionResult"] = result; }
+        if arena.has_update().unwrap() {
+            let update = arena.transaction().unwrap();
+            response["update"] = serde_json::to_value(&update).unwrap();
+            self.store.apply_decoded(update).unwrap();
+            response["tree"] = self.tree(self.store.root().unwrap());
+        }
+        (arena.is_final().unwrap(), response)
+    }
+
+    /// Expands finite views only inside assertions outside production delivery.
+    fn tree(&self, reference: &ToolPkgComposeDslProtocol::ToolPkgComposeDslReference) -> Value {
+        let node = self.store.view(reference).unwrap();
+        let children: Vec<Value> = node.children.iter().map(|child| self.tree(child)).collect();
+        let slots: BTreeMap<String, Vec<Value>> = node.slots.iter().map(|(name, refs)| (name.clone(), refs.iter().map(|child| self.tree(child)).collect())).collect();
+        serde_json::json!({"type": node.node_type, "props": node.props, "children": children, "slots": slots})
+    }
+}
+
+/// Visits a finite assertion tree without depending on the removed transport records.
+fn assertionNodes(response: &Value) -> Vec<&Value> {
+    /// Collects ordinary children and explicit slots in visible order.
+    fn visit<'a>(node: &'a Value, nodes: &mut Vec<&'a Value>) {
+        nodes.push(node);
+        for child in node["children"].as_array().unwrap() { visit(child, nodes); }
+        for children in node["slots"].as_object().unwrap().values() {
+            for child in children.as_array().unwrap() { visit(child, nodes); }
         }
     }
-
-    /// Expands node identifiers only inside test assertions, outside the production transport.
-    fn tree(&self, id: &str) -> Value {
-        let node = &self.nodes[id];
-        let children: Vec<Value> = node["children"].as_array().unwrap().iter().map(|id| self.tree(id.as_str().unwrap())).collect();
-        let slots: BTreeMap<String, Vec<Value>> = node["slots"].as_object().unwrap().iter().map(|(name, ids)| (name.clone(), ids.as_array().unwrap().iter().map(|id| self.tree(id.as_str().unwrap())).collect())).collect();
-        serde_json::json!({"type": node["nodeType"], "props": node["props"], "children": children, "slots": slots})
-    }
-
-    /// Adds a test tree only to responses that actually contain a composition update.
-    fn project(&self, mut response: Value) -> Value {
-        if response.get("update").is_some() { response["tree"] = self.tree(self.root.as_deref().unwrap()); }
-        response
-    }
+    let mut nodes = Vec::new();
+    visit(&response["tree"], &mut nodes);
+    nodes
 }
 
 /// Resolves a test-owned retained graph for the concrete native engine handle.
@@ -102,16 +116,10 @@ impl super::JsEngine {
         let graph = assertionGraph(self);
         let final_response = Arc::new(Mutex::new(None));
         let capture = final_response.clone();
-        let sink = Arc::new(move |envelope: Value| {
-            let response = envelope["response"].clone();
-            let mut graph = graph.lock().unwrap();
-            graph.accept(&response);
-            let projected = if retained_only { response } else { graph.project(response) };
-            match envelope["phase"].as_str().unwrap() {
-                "final" => *capture.lock().unwrap() = Some(projected),
-                "intermediate" => if let Some(callback) = &intermediate { callback(projected); },
-                phase => panic!("Unexpected response phase: {phase}"),
-            }
+        let sink = Arc::new(move |envelope: operit_host_api::HostJavaScriptValue| {
+            let (is_final, response) = graph.lock().unwrap().accept(envelope);
+            if is_final { *capture.lock().unwrap() = Some(response); }
+            else if let Some(callback) = &intermediate { callback(response); }
         });
         Box::pin(async move {
             let result = match script {
@@ -4255,7 +4263,7 @@ async fn compose_dsl_retained_state_stays_in_native_js_session() {
         "initial retained render",
     );
     assert!(first.get("state").is_none() && first.get("memo").is_none());
-    let action = first["update"]["upserts"][0]["props"]["onClick"]["__actionId"]
+    let action = assertionNodes(&first)[0]["props"]["onClick"]["__actionId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -4308,9 +4316,7 @@ async fn compose_dsl_retained_state_stays_in_native_js_session() {
             .await,
         "host input update",
     );
-    assert!(input["update"]["upserts"]
-        .as_array()
-        .unwrap()
+    assert!(assertionNodes(&input)
         .iter()
         .any(|node| node["props"]["text"] == "host:2"));
     assert!(input.get("state").is_none() && input.get("memo").is_none());
@@ -4338,12 +4344,10 @@ async fn compose_dsl_retained_state_stays_in_native_js_session() {
     );
     assert_eq!(fresh["update"]["reset"], true);
     assert_eq!(fresh["update"]["revision"], 1);
-    assert!(fresh["update"]["upserts"]
-        .as_array()
-        .unwrap()
+    assert!(assertionNodes(&fresh)
         .iter()
         .any(|node| node["props"]["text"] == "initial:0"));
-    let fresh_action = fresh["update"]["upserts"][0]["props"]["onClick"]["__actionId"]
+    let fresh_action = assertionNodes(&fresh)[0]["props"]["onClick"]["__actionId"]
         .as_str()
         .unwrap();
     let fresh_result = expect_js_output(
@@ -4382,7 +4386,7 @@ async fn compose_dsl_webview_interface_actions_survive_retained_commits() {
     params.insert("__test_retained_response".into(), Value::Bool(true));
     params.insert("executionContextKey".into(), Value::String("webview-actions".into()));
     let first = expect_js_output(engine.renderForAssertions(script, &params, &BTreeMap::new(), Arc::new(BTreeMap::new())).await, "WebView initial render");
-    let on_load = first["update"]["upserts"].as_array().unwrap().iter().find_map(|node| node["props"]["onLoad"]["__actionId"].as_str()).unwrap();
+    let on_load = assertionNodes(&first).iter().find_map(|node| node["props"]["onLoad"]["__actionId"].as_str()).unwrap();
     let loaded = expect_js_output(engine.actionForAssertions(on_load, None, &params, &BTreeMap::new(), None).await, "WebView initialization");
     let id = loaded["actionResult"].as_str().unwrap();
     for _ in 0..5 {
@@ -4416,7 +4420,7 @@ async fn compose_dsl_character_card_webview_interface_survives_native_commits() 
     params.insert("executionContextKey".into(), Value::String("character-webview-actions".into()));
     params.insert("theme".into(), serde_json::json!({"brightness":"dark", "colors":{"primary":"#ff102030"}}));
     let first = expect_js_output(engine.renderForAssertions(&script, &params, &BTreeMap::new(), Arc::new(BTreeMap::new())).await, "character initial render");
-    let on_load = first["update"]["upserts"].as_array().unwrap().iter().find_map(|node| node["props"]["onLoad"]["__actionId"].as_str()).unwrap();
+    let on_load = assertionNodes(&first).iter().find_map(|node| node["props"]["onLoad"]["__actionId"].as_str()).unwrap();
     expect_js_output(engine.actionForAssertions(on_load, None, &params, &BTreeMap::new(), None).await, "character onLoad");
     let raw = engine.execute_script_function(
         "exports.inspect = function() {return globalThis.characterWebViewCommand.payload.object.loadScreen.__actionId;};",
@@ -4454,7 +4458,7 @@ async fn compose_dsl_reload_drains_intermediate_revisions_before_final() {
     params.insert("__test_retained_response".into(), Value::Bool(true));
     params.insert("executionContextKey".into(), Value::String("revision-order".into()));
     let initial = expect_js_output(engine.renderForAssertionsAsync(source.into(), params.clone(), BTreeMap::new(), Arc::new(BTreeMap::new())).await, "initial revision");
-    let action_id = initial["update"]["upserts"].as_array().unwrap().iter().find_map(|node| node["props"]["onLoad"]["__actionId"].as_str()).unwrap().to_owned();
+    let action_id = assertionNodes(&initial).iter().find_map(|node| node["props"]["onLoad"]["__actionId"].as_str()).unwrap().to_owned();
     let delivered = Arc::new(Mutex::new(vec![initial["update"]["revision"].as_u64().unwrap()]));
     let captured = delivered.clone();
     let intermediate_ready = Arc::new(tokio::sync::Notify::new());
@@ -4479,7 +4483,7 @@ async fn compose_dsl_reload_drains_intermediate_revisions_before_final() {
     finishGatedTool(&host);
     let final_response = expect_js_output(action.await, "action final revision");
     assert_eq!(final_response["actionResult"], "done");
-    assert!(final_response["update"]["upserts"].as_array().unwrap().iter().any(|node| node["props"]["text"] == "2"));
+    assert!(assertionNodes(&final_response).iter().any(|node| node["props"]["text"] == "2"));
     delivered.lock().unwrap().push(final_response["update"]["revision"].as_u64().unwrap());
     let revisions = delivered.lock().unwrap().clone();
     assert!(revisions.len() >= 4, "both action intermediates and final updates must be exercised: {revisions:?}");
@@ -4529,7 +4533,7 @@ async fn prepared_provider_replenishes_without_reusing_page_state() {
     testJavaScriptRuntimeHost();
     register_test_runtime_storage("js-engine-tests");
     let host = Arc::new(TestPluginConfigExecutionHost::default());
-    let provider = crate::javascript::JsExecutionProvider::QuickJsExecutionProvider::new();
+    let provider = crate::javascript::JsExecutionProvider::HostJsExecutionProvider::new();
     for index in 0..5 {
         let engine = provider.acquire_toolpkg_execution_engine(host.clone(), ToolPkgExecutionContext {
             context_key: format!("prepared-page-{index}"), container_package_name: "test.package".into(),
@@ -4634,7 +4638,7 @@ fn native_compose_compiler_defers_parser_until_first_source_compilation() {
         &operit_plugin_sdk::toolpkg::ToolPkgComposeDslBridge::buildComposeDslCompilerDefinition(&testComposeParserSourceProvider())).unwrap();
     let result = runtime.evaluateHostJavaScriptString("probe-lazy-parser", r#"JSON.stringify((function() {
         var startup = parserInitializations;
-        var artifact = '// @operit-compose-artifact 1\nexports.default = ctx => ctx.UI.Text({text:"artifact"});';
+        var artifact = '// @operit-compose-artifact 4\nexports.default = ctx => ctx.UI.Text({text:"artifact"});';
         OperitComposeCompiler.prepare(artifact, 'artifact');
         var afterArtifact = parserInitializations;
         OperitComposeCompiler.prepare('exports.default = ctx => ctx.UI.Text({text:"source"});', 'first');
@@ -4652,7 +4656,7 @@ fn native_compose_parser_rejects_after_interrupted_initialization() {
     let mut runtime = testJavaScriptRuntimeHost().createHostJavaScriptRuntime().unwrap();
     let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let signal = armed.clone();
-    runtime.registerHostJavaScriptJsonFunction("__armParserInterrupt", Arc::new(move |_| {
+    runtime.registerHostJavaScriptFunction("__armParserInterrupt", Arc::new(move |_| {
         signal.store(true, Ordering::SeqCst);
         Ok(Value::Null)
     })).unwrap();
@@ -4776,7 +4780,7 @@ async fn native_compose_page_load_probe() {
                 ("theme".into(), serde_json::json!({"brightness":"dark", "colors":{"primary":"#ff102030"}})),
             ]);
             engine.execute_script_function(&setup, "install", &options, &BTreeMap::new(), None, false, None).await.unwrap();
-            let updates = Arc::new(Mutex::new(Vec::<Value>::new()));
+            let updates = Arc::new(Mutex::new(Vec::<operit_host_api::HostJavaScriptValue>::new()));
             let sink = updates.clone();
             let started = Instant::now();
             let result = engine.execute_compose_dsl_script_stream_async(
@@ -4785,7 +4789,10 @@ async fn native_compose_page_load_probe() {
             ).await.unwrap();
             let render_ms = started.elapsed().as_secs_f64() * 1000.0;
             assert_eq!(result, Some(Value::Null));
-            let nodes: usize = updates.lock().unwrap().iter().filter_map(|event| event["response"]["update"]["upserts"].as_array()).map(Vec::len).sum();
+            let nodes: usize = updates.lock().unwrap().iter().map(|event| {
+                let operit_host_api::HostJavaScriptValue::Buffer(bytes) = event else { panic!("Expected Compose buffer") };
+                ToolPkgComposeDslProtocol::ComposeBuffer::new(bytes).unwrap().transaction().unwrap().instances.len()
+            }).sum();
             assert!(nodes > 0, "Page must publish a real retained tree");
             samples.push(serde_json::json!({"mode":mode,"sample":index,"sourceBytes":source.len(),"bootstrapMs":bootstrap_ms,"renderMs":render_ms,"nodes":nodes}));
             engine.destroy();

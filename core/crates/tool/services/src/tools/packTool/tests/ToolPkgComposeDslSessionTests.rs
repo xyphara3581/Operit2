@@ -4,6 +4,79 @@ use operit_host_api::HostManager::{setDefaultHostJavaScriptRuntimeHost, setDefau
 use operit_host_native_scheduler::{NativeHostJavaScriptRuntimeHost, NativeHostRuntimeTaskSchedulerHost};
 use operit_js_bridge::javascript::JsEngine::JsEngine;
 
+use super::super::ToolPkgComposeDslProgramStore::ToolPkgComposeDslProgramStore;
+use super::super::ToolPkgComposeDslProtocol::{ToolPkgComposeDslReference, ToolPkgComposeDslDecodedTransaction};
+
+/// Projects instructions solely for behavior assertions outside production transport and timing.
+#[derive(Debug)]
+struct ProgramTestView {
+    id: String,
+    nodeType: String,
+    props: BTreeMap<String, Value>,
+    children: Vec<String>,
+    slots: BTreeMap<String, Vec<String>>,
+}
+
+/// Retains the actual transaction alongside an assertion-only native view.
+#[derive(Debug)]
+struct ProgramTestUpdate {
+    transaction: ToolPkgComposeDslDecodedTransaction,
+    views: Vec<ProgramTestView>,
+}
+impl std::ops::Deref for ProgramTestUpdate {
+    type Target = ToolPkgComposeDslDecodedTransaction;
+    /// Exposes the unchanged transaction metadata for revision and transport assertions.
+    fn deref(&self) -> &Self::Target { &self.transaction }
+}
+
+/// Keeps command lifecycle metadata exactly as published by the real session.
+#[derive(Debug)]
+struct ProgramTestEvent { event: ToolPkgComposeDslEvent, update: Option<ProgramTestUpdate> }
+impl std::ops::Deref for ProgramTestEvent {
+    type Target = ToolPkgComposeDslEvent;
+    /// Exposes original command metadata without creating another event path.
+    fn deref(&self) -> &Self::Target { &self.event }
+}
+
+/// Converts a logical address into a compact assertion identity.
+fn reference_id(reference: &ToolPkgComposeDslReference) -> String { format!("{}#{}", reference.instanceId, reference.node) }
+
+/// Reads finite host views after a transaction, never inside measured JS construction.
+fn inspect_programs(store: &ToolPkgComposeDslProgramStore) -> ProgramTestUpdate {
+    let transaction = store.snapshot().unwrap();
+    let mut views = Vec::new();
+    for instance in &transaction.instances {
+        let program = transaction.programs.iter().find(|program| program.id == instance.programId).unwrap();
+        for node in 0..program.nodes.len() {
+            let reference = ToolPkgComposeDslReference {instanceId: instance.id.clone(), node: node as u32};
+            let view = store.view(&reference).unwrap();
+            views.push(ProgramTestView {id: reference_id(&reference), nodeType: view.node_type, props: view.props,
+                children: view.children.iter().map(reference_id).collect(),
+                slots: view.slots.into_iter().map(|(key, values)| (key, values.iter().map(reference_id).collect())).collect()});
+        }
+    }
+    ProgramTestUpdate {transaction, views}
+}
+
+/// Interprets the real protocol only when tests inspect delivered events.
+struct ProgramTestStream { stream: ToolPkgComposeDslEventStream, store: ToolPkgComposeDslProgramStore }
+impl ProgramTestStream {
+    /// Associates an assertion store with one session stream.
+    fn new(stream: ToolPkgComposeDslEventStream) -> Self { Self {stream, store: ToolPkgComposeDslProgramStore::default()} }
+    /// Projects the currently committed store while retaining the exact incoming transaction.
+    fn inspect(&mut self, event: ToolPkgComposeDslEvent) -> ProgramTestEvent {
+        let update = event.update.as_ref().map(|transaction| {
+            self.store.apply(transaction.clone()).unwrap();
+            let mut inspected = inspect_programs(&self.store);
+            inspected.transaction = transaction.decode().unwrap();
+            inspected
+        });
+        ProgramTestEvent {event, update}
+    }
+    /// Receives detached publications through their actual asynchronous stream.
+    async fn recv(&mut self) -> Option<ProgramTestEvent> { let event = self.stream.receiver.recv().await?; Some(self.inspect(event)) }
+}
+
 /// Installs the actual Host runtime and wraps its engine in the production session adapter.
 fn native_session() -> (ToolPkgComposeDslSession, JsEngine) {
     setDefaultHostJavaScriptRuntimeHost(Arc::new(NativeHostJavaScriptRuntimeHost::new()));
@@ -31,14 +104,14 @@ fn command(id: &str, script: Option<String>, action: Option<String>, payload: Op
 }
 
 /// Collects emitted commits and completion events without changing their original stream order.
-fn drain(stream: &mut ToolPkgComposeDslEventStream) -> Vec<ToolPkgComposeDslEvent> {
+fn drain(stream: &mut ProgramTestStream) -> Vec<ProgramTestEvent> {
     let mut events = Vec::new();
-    while let Ok(event) = stream.receiver.try_recv() { events.push(event); }
+    while let Ok(event) = stream.stream.receiver.try_recv() { events.push(stream.inspect(event)); }
     events
 }
 
 /// Checks every emitted revision and rejects errors, gaps, duplicates and out-of-order delivery.
-fn assert_revisions(events: &[ToolPkgComposeDslEvent]) {
+fn assert_revisions(events: &[ProgramTestEvent]) {
     let mut expected = 1;
     for event in events {
         assert!(event.error.is_none(), "{}: {:?}", event.requestId, event.error);
@@ -59,7 +132,7 @@ fn assert_revisions(events: &[ToolPkgComposeDslEvent]) {
 #[tokio::test(flavor = "current_thread")]
 async fn native_concurrent_actions_publish_every_commit_before_command_completion() {
     let (session, engine) = native_session();
-    let mut stream = session.updates().unwrap();
+    let mut stream = ProgramTestStream::new(session.updates().unwrap());
     let source = r#"exports.default = function(ctx) {
         const [count, setCount] = ctx.useState('count', 0);
         return ctx.UI.Column({change: async function(next) {
@@ -69,7 +142,7 @@ async fn native_concurrent_actions_publish_every_commit_before_command_completio
     session.execute(command("render", Some(source.into()), None, None)).await;
     let mut events = drain(&mut stream);
     assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
-    let action = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.upserts)
+    let action = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.views)
         .find_map(|node| node.props.get("change").and_then(|value| value["__actionId"].as_str())).unwrap().to_string();
     let mut tasks = Vec::new();
     for index in 0..24 {
@@ -93,7 +166,7 @@ async fn native_concurrent_actions_publish_every_commit_before_command_completio
 #[tokio::test(flavor = "current_thread")]
 async fn native_character_editor_webview_actions_preserve_session_revision_order() {
     let (session, engine) = native_session();
-    let mut stream = session.updates().unwrap();
+    let mut stream = ProgramTestStream::new(session.updates().unwrap());
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
     let source = std::fs::read_to_string(root.join("plugins/packages/buildin/character_cards/dist/ui/main/index.ui.js")).unwrap();
     let setup = r#"exports.install = function() {
@@ -118,7 +191,7 @@ async fn native_character_editor_webview_actions_preserve_session_revision_order
     eprintln!("character_editor_probe phase=cold_script_to_retained_commit elapsedMs={:.3}", render_started.elapsed().as_secs_f64() * 1000.0);
     let mut events = drain(&mut stream);
     assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
-    let on_load = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.upserts)
+    let on_load = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.views)
         .find_map(|node| node.props.get("onLoad").and_then(|value| value["__actionId"].as_str())).unwrap().to_string();
     let load_started = std::time::Instant::now();
     session.execute(command("onLoad", None, Some(on_load), None)).await;
@@ -156,7 +229,7 @@ async fn native_character_editor_webview_actions_preserve_session_revision_order
 #[tokio::test(flavor = "current_thread")]
 async fn native_async_render_and_no_render_action_keep_final_results_on_the_stream() {
     let (session, engine) = native_session();
-    let mut stream = session.updates().unwrap();
+    let mut stream = ProgramTestStream::new(session.updates().unwrap());
     let source = r#"exports.default = async function(ctx) {
         await Promise.resolve();
         return ctx.UI.Column({reply: async function(payload) {
@@ -166,7 +239,7 @@ async fn native_async_render_and_no_render_action_keep_final_results_on_the_stre
     session.execute(command("render", Some(source.into()), None, None)).await;
     let mut events = drain(&mut stream);
     assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
-    let action = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.upserts)
+    let action = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.views)
         .find_map(|node| node.props.get("reply").and_then(|value| value["__actionId"].as_str())).unwrap().to_string();
     session.execute(command("rpc", None, Some(action.clone()), Some(serde_json::json!({"__no_render":true,"value":"rpc-result"})))).await;
     events.extend(drain(&mut stream));
@@ -187,7 +260,7 @@ async fn native_async_render_and_no_render_action_keep_final_results_on_the_stre
 #[tokio::test(flavor = "current_thread")]
 async fn native_detached_timer_keeps_commit_order_and_request_owner_after_input_refresh() {
     let (session, engine) = native_session();
-    let mut stream = session.updates().unwrap();
+    let mut stream = ProgramTestStream::new(session.updates().unwrap());
     let source = r#"exports.default = function(ctx) {
         const [count, setCount] = ctx.useState('count', 0);
         const timer = ctx.useRef('timer', null);
@@ -200,7 +273,7 @@ async fn native_detached_timer_keeps_commit_order_and_request_owner_after_input_
     session.execute(command("render", Some(source.into()), None, None)).await;
     let mut events = drain(&mut stream);
     assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
-    let action = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.upserts)
+    let action = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.views)
         .find_map(|node| node.props.get("start").and_then(|value| value["__actionId"].as_str())).unwrap().to_string();
     session.execute(command("timer-owner", None, Some(action), None)).await;
     events.extend(drain(&mut stream));
@@ -211,8 +284,8 @@ async fn native_detached_timer_keeps_commit_order_and_request_owner_after_input_
     assert_eq!(events.iter().filter(|event| event.phase == "complete").count(), 3);
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            let event = stream.receiver.recv().await.expect("session must remain open for its detached timer");
-            let changed = event.update.as_ref().is_some_and(|update| update.upserts.iter().any(|node| node.props.get("text") == Some(&Value::String("1".into()))));
+            let event = stream.recv().await.expect("session must remain open for its detached timer");
+            let changed = event.update.as_ref().is_some_and(|update| update.views.iter().any(|node| node.props.get("text") == Some(&Value::String("1".into()))));
             assert!(event.error.is_none(), "{event:?}");
             if changed {
                 assert_eq!(event.requestId, "timer-owner", "detached commits must keep the action sink, not the newest render sink");
@@ -292,7 +365,7 @@ async fn native_source_fingerprint_preserves_utf16_cache_identity_and_source_cha
 #[tokio::test(flavor = "current_thread")]
 async fn native_compose_artifact_loads_without_parser_and_invalidates_changed_source() {
     let (session, engine) = native_session();
-    let mut stream = session.updates().unwrap();
+    let mut stream = ProgramTestStream::new(session.updates().unwrap());
     let install = r#"exports.install = function() {
         if (typeof __operitAcorn !== 'undefined' || typeof OperitComposeCompiler !== 'undefined') throw Error('Page must not own the compiler');
         return true;
@@ -300,47 +373,27 @@ async fn native_compose_artifact_loads_without_parser_and_invalidates_changed_so
     engine.execute_script_function(install, "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
     let source = std::fs::read_to_string(root.join("plugins/packages/buildin/character_cards/dist/ui/main/index.ui.js")).unwrap();
-    assert!(source.starts_with("// @operit-compose-artifact 2\n"));
+    assert!(source.starts_with("// @operit-compose-artifact 4\n"));
     session.execute(command("artifact", Some(source), None, None)).await;
     let events = drain(&mut stream);
     assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
     assert!(events.iter().any(|event| event.update.is_some()));
-    let first = "// @operit-compose-artifact 1\nexports.default = ctx => ctx.UI.Text({text:'first'});";
+    let first = "// @operit-compose-artifact 4\nexports.default = ctx => ctx.UI.Text({text:'first'});";
     let other = first.replace("first", "other");
     assert_eq!(first.len(), other.len());
     for (script, expected) in [(first, "first"), (other.as_str(), "other"), (first, "first")] {
         session.execute(command(expected, Some(script.into()), None, None)).await;
         let events = drain(&mut stream);
         assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
-        assert!(events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.upserts)
+        assert!(events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.views)
             .any(|node| node.props.get("text") == Some(&Value::from(expected))), "{events:?}");
     }
-    session.execute(command("bad-version", Some(first.replace("artifact 1", "artifact 999")), None, None)).await;
+    session.execute(command("bad-version", Some(first.replace("artifact 4", "artifact 999")), None, None)).await;
     assert!(drain(&mut stream).iter().any(|event| event.error.as_ref().is_some_and(|error| error.contains("Unsupported Compose artifact version"))));
     // Rejection must not poison the engine or replace its valid factory cache.
     session.execute(command("recovery", Some(other), None, None)).await;
     assert!(drain(&mut stream).iter().all(|event| event.error.is_none()));
     session.close(); engine.destroy();
-}
-
-/// Loads optional historical SDK sources only for explicitly invoked performance comparisons.
-fn lazy_baseline_install_script() -> Option<String> {
-    let mut declarations = String::new();
-    let mut assignments = String::new();
-    for (variable, global) in [
-        ("OPERIT_LAZY_BASELINE_SOURCE", "OperitComposeLazy"),
-        ("OPERIT_GENERATION_BASELINE_SOURCE", "OperitComposeGeneration"),
-        ("OPERIT_NODES_BASELINE_SOURCE", "OperitComposeNodes"),
-        ("OPERIT_RETAINED_BASELINE_SOURCE", "OperitComposeRetained"),
-    ] {
-        if let Some(path) = std::env::var_os(variable) {
-            declarations.push_str(&std::fs::read_to_string(path).unwrap());
-            declarations.push('\n');
-            assignments.push_str(&format!("globalThis.{global} = {global};"));
-        }
-    }
-    if assignments.is_empty() { return None; }
-    Some(format!("{declarations}\nexports.install = function() {{ {assignments} }};"))
 }
 
 /// Measures fresh native page engines separately from source lowering and warm retained refreshes.
@@ -351,7 +404,6 @@ async fn native_character_editor_load_stage_performance_probe() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
     let source_dir = std::env::var_os("OPERIT_DSL_PROBE_SOURCE_DIR").map(std::path::PathBuf::from)
         .unwrap_or_else(|| root.join("plugins/packages/buildin/character_cards/dist/ui"));
-    let baseline_install = lazy_baseline_install_script();
     let install = r#"exports.install = function() {
         globalThis.__editorProbe = {prepareMs:0, prepareCalls:0, renderMs:0, commitMs:0};
         const prepare = __operitNativePrepareComposeModule;
@@ -369,9 +421,9 @@ async fn native_character_editor_load_stage_performance_probe() {
         const create = OperitComposeDslRuntime.createContext;
         /** Measures retained commits inside the actual session's context. */
         OperitComposeDslRuntime.createContext = function(options) {
-            const bundle = create(options); const commit = bundle.composition.commit;
+            const bundle = create(options); const commit = bundle.composition.finish;
             /** Preserves the exact commit and revision while observing elapsed time. */
-            bundle.composition.commit = function(tree) {
+            bundle.composition.finish = function(tree) {
                 const start = Date.now(); const result = commit(tree);
                 globalThis.__editorProbe.commitMs += Date.now() - start; return result;
             };
@@ -394,10 +446,7 @@ async fn native_character_editor_load_stage_performance_probe() {
             let bootstrap = std::time::Instant::now();
             let (session, engine) = native_session();
             let bootstrap_ms = bootstrap.elapsed().as_secs_f64() * 1000.0;
-            let mut stream = session.updates().unwrap();
-            if let Some(baseline_install) = &baseline_install {
-                engine.execute_script_function(baseline_install, "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
-            }
+            let mut stream = ProgramTestStream::new(session.updates().unwrap());
             engine.execute_script_function(install, "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
             let render_start = std::time::Instant::now();
             let mut initial = command("render", Some(source.clone()), None, None);
@@ -407,7 +456,7 @@ async fn native_character_editor_load_stage_performance_probe() {
             let events = drain(&mut stream);
             assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
             assert!(events.iter().any(|event| event.phase == "final" && event.update.is_some()));
-            let node_count: usize = events.iter().filter_map(|event| event.update.as_ref()).map(|update| update.upserts.len()).sum();
+            let node_count: usize = events.iter().filter_map(|event| event.update.as_ref()).map(|update| update.instances.len()).sum();
             let result = engine.execute_script_function(inspect, "inspect", &options(), &BTreeMap::new(), None, false, None).await.unwrap().unwrap();
             let stages: Value = serde_json::from_str(&result).unwrap();
             let mut warm = Vec::new();
@@ -424,7 +473,7 @@ async fn native_character_editor_load_stage_performance_probe() {
             let after: Value = serde_json::from_str(&result).unwrap();
             assert_eq!(after["prepareCalls"], Value::from(if precompiled { 0 } else { 1 }));
             samples.push(serde_json::json!({"sample":sample,"engineBootstrapMs":bootstrap_ms,"scriptToCommitMs":render_ms,
-                "coldTotalMs":bootstrap_ms+render_ms,"upserts":node_count,"stages":stages,"warmInputRefreshMs":warm}));
+                "coldTotalMs":bootstrap_ms+render_ms,"instances":node_count,"stages":stages,"warmInputRefreshMs":warm}));
             session.close(); engine.destroy();
         }
         screens.push(serde_json::json!({"screen":screen,"sourceBytes":source.len(),"precompiled":precompiled,"samples":samples}));
@@ -436,9 +485,9 @@ async fn native_character_editor_load_stage_performance_probe() {
 /// Replays the compiled native sidebar through repeated metadata reorders and input refreshes.
 #[tokio::test(flavor = "current_thread")]
 async fn native_character_sidebar_reorder_keeps_every_retained_reference_mounted() {
-    use crate::tools::packTool::ToolPkgComposeDslNodeStore::ToolPkgComposeDslNodeStore;
+    use crate::tools::packTool::ToolPkgComposeDslProgramStore::ToolPkgComposeDslProgramStore;
     let (session, engine) = native_session();
-    let mut stream = session.updates().unwrap();
+    let mut stream = ProgramTestStream::new(session.updates().unwrap());
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
     let plugin = std::fs::read_to_string(root.join("plugins/packages/buildin/character_cards/dist/ui/chat-sidebar/index.ui.js")).unwrap();
     let setup = r#"exports.install = function() {
@@ -459,7 +508,7 @@ async fn native_character_sidebar_reorder_keeps_every_retained_reference_mounted
     let source = plugin;
     let chats: Vec<Value> = (1..=3).map(|index| serde_json::json!({
         "id":format!("c{index}"), "title":format!("Chat {index}"), "updatedAt":"1791059541109",
-        "displayOrder":index, "workspaceId":null, "workspaceName":null, "locked":false,
+        "displayOrder":index, "workspaceId":null, "workspaceName":null, "locked":false, "parentChatId":null,
         "pinned":false, "group":if index < 3 { Some("Group") } else { None },
     })).collect();
     let input = serde_json::json!({"input":{"view":"characters"}, "chatSidebar":{
@@ -470,12 +519,12 @@ async fn native_character_sidebar_reorder_keeps_every_retained_reference_mounted
     session.execute(render).await;
     let mut events = drain(&mut stream);
     assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
-    let mut store = ToolPkgComposeDslNodeStore::default();
-    for event in &events { if let Some(update) = &event.update { store.apply(update.clone()).unwrap(); } }
-    let action = store.root().unwrap().props["onLoad"]["__actionId"].as_str().unwrap().to_string();
+    let mut store = ToolPkgComposeDslProgramStore::default();
+    for event in &events { if let Some(update) = &event.update { store.apply_decoded(update.transaction.clone()).unwrap(); } }
+    let action = store.view(store.root().unwrap()).unwrap().props["onLoad"]["__actionId"].as_str().unwrap().to_string();
     session.execute(command("sidebar-load", None, Some(action), None)).await;
     let loaded = drain(&mut stream);
-    for event in &loaded { assert!(event.error.is_none(), "{event:?}"); if let Some(update) = &event.update { store.apply(update.clone()).unwrap(); } }
+    for event in &loaded { assert!(event.error.is_none(), "{event:?}"); if let Some(update) = &event.update { store.apply_decoded(update.transaction.clone()).unwrap(); } }
     events.extend(loaded);
     for sample in 0..12 {
         let mut next = input.clone();
@@ -493,14 +542,14 @@ async fn native_character_sidebar_reorder_keeps_every_retained_reference_mounted
         refresh.runtimeOptions.insert("__operit_input_state".into(), next);
         session.execute(refresh).await;
         let updates = drain(&mut stream);
-        for event in &updates { assert!(event.error.is_none(), "{event:?}"); if let Some(update) = &event.update { store.apply(update.clone()).unwrap(); } }
+        for event in &updates { assert!(event.error.is_none(), "{event:?}"); if let Some(update) = &event.update { store.apply_decoded(update.transaction.clone()).unwrap(); } }
         events.extend(updates);
-        let snapshot = store.snapshot().unwrap();
-        assert!(snapshot.upserts.iter().any(|record|
+        let snapshot = inspect_programs(&store);
+        assert!(snapshot.views.iter().any(|record|
             record.props.get("text") == Some(&Value::String(format!("Travel {}", sample + 2)))
         ), "Host input updates must run the sidebar lifecycle without another action command; sample={sample}, texts={:?}",
-            snapshot.upserts.iter().filter_map(|record| record.props.get("text")).collect::<Vec<_>>());
-        let nodes: BTreeMap<_, _> = snapshot.upserts.iter().map(|record| (&record.id, record)).collect();
+            snapshot.views.iter().filter_map(|record| record.props.get("text")).collect::<Vec<_>>());
+        let nodes: BTreeMap<_, _> = snapshot.views.iter().map(|record| (&record.id, record)).collect();
         for record in nodes.values() {
             for child in record.children.iter().chain(record.slots.values().flatten()) {
                 assert!(nodes.contains_key(child), "{} references missing {child}", record.id);
@@ -518,7 +567,7 @@ async fn native_restart_reopens_closed_cached_session_and_renders() {
     let (old, engine) = native_session();
     let key = ("restarted-dart-page:0".to_string(), "package".to_string());
     let mut cache = BTreeMap::from([(key.clone(), old.clone())]);
-    let mut old_updates = old.updates().unwrap();
+    let mut old_updates = ProgramTestStream::new(old.updates().unwrap());
     old.execute(command("render-before-restart", Some(
         "exports.default = ctx => ctx.UI.Text({text: 'before restart'});".into()
     ), None, None)).await;
@@ -533,7 +582,7 @@ async fn native_restart_reopens_closed_cached_session_and_renders() {
     }).unwrap();
     assert_ne!(id, old.id(), "the live Rust manager must not return the closed capability");
     let reopened = ToolPkgComposeDslSession::resolve(&id).unwrap();
-    let mut updates = reopened.updates().unwrap();
+    let mut updates = ProgramTestStream::new(reopened.updates().unwrap());
     reopened.execute(command("render-after-restart", Some(
         "exports.default = ctx => ctx.UI.Text({text: 'usable after restart'});".into()
     ), None, None)).await;
@@ -549,166 +598,11 @@ async fn native_restart_reopens_closed_cached_session_and_renders() {
     reopened.close(); engine.destroy();
 }
 
-/// Measures overlap reuse through the native scheduler, QuickJS, retained graph and response stream.
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "Run explicitly for native lazy window timing; optional OPERIT_LAZY_BASELINE_SOURCE loads an older SDK Lazy.js"]
-async fn native_lazy_window_overlap_performance_probe() {
-    let baseline = lazy_baseline_install_script();
-    let source = r#"exports.default = function(ctx) {
-        const [label, setLabel] = ctx.useState('label', 'Row');
-        return ctx.UI.LazyColumn({ rename:setLabel, ...ctx.lazyItems({key:'rows', itemCount:1000,
-            itemExtent:34, initialItemCount:24}, index => {
-                globalThis.builderRuns = (globalThis.builderRuns || 0) + 1;
-                return ctx.UI.Row({key:'item:' + index, onClick:() => index},
-                    Array.from({length:23}, (_, child) => ctx.UI.Text({text:label + ' ' + index + ':' + child})));
-            }) });
-    };"#;
-    let mut results = Vec::new();
-    for pair in 0..8 {
-        let variants: Vec<_> = if baseline.is_none() { vec![false] }
-            else if pair % 2 == 0 { vec![true, false] } else { vec![false, true] };
-        for is_baseline in variants {
-            let (session, engine) = native_session();
-            if is_baseline {
-                engine.execute_script_function(baseline.as_ref().unwrap(), "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
-            }
-            let mut stream = session.updates().unwrap();
-            let started = std::time::Instant::now();
-            session.execute(command("initial", Some(source.into()), None, None)).await;
-            let initial_ms = started.elapsed().as_secs_f64() * 1000.0;
-            let mut events = drain(&mut stream);
-            assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
-            let root = events.iter().filter_map(|event| event.update.as_ref())
-                .flat_map(|update| &update.upserts).find(|node| node.nodeType == "LazyColumn").unwrap();
-            let range_action = root.props["viewport"]["onRangeChanged"]["__actionId"].as_str().unwrap().to_owned();
-            let rename_action = root.props["rename"]["__actionId"].as_str().unwrap().to_owned();
-            let initial_nodes: usize = events.iter().filter_map(|event| event.update.as_ref()).map(|update| update.upserts.len()).sum();
-            assert_eq!(initial_nodes, 577);
-            let mut shifts = Vec::new();
-            for shift in 1..=20 {
-                let first = shift * 2;
-                let started = std::time::Instant::now();
-                session.execute(command("shift", None, Some(range_action.clone()),
-                    Some(serde_json::json!({"firstIndex":first,"lastIndex":first+24})))).await;
-                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-                let changed = drain(&mut stream);
-                assert!(changed.iter().all(|event| event.error.is_none()), "{changed:?}");
-                let upserts: usize = changed.iter().filter_map(|event| event.update.as_ref()).map(|update| update.upserts.len()).sum();
-                if is_baseline { assert_eq!(upserts, 555); }
-                else { assert_eq!(upserts, 49, "a shift changes only two entering rows and the list root"); }
-                shifts.push(serde_json::json!({"elapsedMs":elapsed_ms,"upserts":upserts}));
-                events.extend(changed);
-            }
-            let inspect = "exports.inspect = function() { return globalThis.builderRuns; };";
-            let builder_runs: usize = engine.execute_script_function(inspect, "inspect", &options(), &BTreeMap::new(), None, false, None)
-                .await.unwrap().unwrap().parse().unwrap();
-            assert_eq!(builder_runs, if is_baseline { 24 * 21 } else { 24 + 2 * 20 });
-            let started = std::time::Instant::now();
-            session.execute(command("rename", None, Some(rename_action), Some(Value::from("Updated")))).await;
-            let rename_ms = started.elapsed().as_secs_f64() * 1000.0;
-            let renamed = drain(&mut stream);
-            assert!(renamed.iter().all(|event| event.error.is_none()), "{renamed:?}");
-            assert!(renamed.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.upserts)
-                .any(|node| node.props.get("text") == Some(&Value::from("Updated 40:0"))));
-            events.extend(renamed);
-            assert_revisions(&events);
-            results.push(serde_json::json!({"pair":pair,"variant":if is_baseline {"baseline"} else {"candidate"},
-                "initialMs":initial_ms,"initialNodes":initial_nodes,"builderRuns":builder_runs,"shifts":shifts,"renameMs":rename_ms}));
-            session.close(); engine.destroy();
-        }
-    }
-    eprintln!("dsl_lazy_overlap_probe {}", serde_json::json!({"profile":if cfg!(debug_assertions) {"debug"} else {"release"},
-        "scope":"native scheduler + QuickJS + retained stream, synthetic 24 rows x 24 nodes, moves two rows; excludes Flutter, images and GPU", "samples":results}));
-}
-
-/// Replays the shipped sidebar with a prepared expanded catalog, without editing generated plugin code.
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "Run explicitly for actual sidebar window timing; does not open the application or personal data"]
-async fn native_character_sidebar_window_performance_probe() {
-    use crate::tools::packTool::ToolPkgComposeDslNodeStore::ToolPkgComposeDslNodeStore;
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
-    let source = std::fs::read_to_string(root.join("plugins/packages/buildin/character_cards/dist/ui/chat-sidebar/index.ui.js")).unwrap();
-    let baseline = lazy_baseline_install_script();
-    let baseline_source = std::env::var_os("OPERIT_SIDEBAR_BASELINE_SOURCE")
-        .map(|path| std::fs::read_to_string(path).unwrap()).unwrap_or_else(|| source.clone());
-    let chats: Vec<_> = (0..100).map(|index| serde_json::json!({"id":format!("chat-{index}"),"title":format!("Benchmark chat {index}"),
-        "updatedAt":"2026-10-18T00:00:00Z","displayOrder":index,"workspaceId":null,"workspaceName":null,"locked":false,"pinned":false,"group":null})).collect();
-    let input = serde_json::json!({"view":"characters"});
-    // Catalog keys use the validated JS record's field order, not serde's map order.
-    let context_chats = chats.iter().map(|chat| format!(
-        "{{\"id\":{},\"title\":{},\"updatedAt\":{},\"displayOrder\":{},\"workspaceId\":null,\"workspaceName\":null,\"locked\":false,\"pinned\":false,\"group\":null}}",
-        chat["id"], chat["title"], chat["updatedAt"], chat["displayOrder"])).collect::<Vec<_>>().join(",");
-    let context = format!("{{\"input\":{},\"chats\":[{}]}}", input, context_chats);
-    let data = serde_json::json!({"view":"characters","sections":[{"id":"card-1","title":"Benchmark Card","avatarUri":null,
-        "kind":"card","selection":"card:1","chats":chats}]});
-    let state = serde_json::json!({"input":input,"chatSidebar":{"chats":chats,"currentChatId":null,"activeStreamingChatIds":[]},
-        "chatSidebarPrepared":{"context":context,"data":data,"defaultAvatar":"/fixture/avatar.png"},
-        "native-sidebar-state":{"data":data,"defaultAvatar":"/fixture/avatar.png","context":context,"loading":false,"busy":false,
-            "error":"","query":"","search":false,"collapsed":[],"expandedGroups":["preview:ungrouped:card-1"],"dialog":null}});
-    let mut results = Vec::new();
-    for pair in 0..8 {
-        let variants: Vec<_> = if baseline.is_none() { vec![false] }
-            else if pair % 2 == 0 { vec![true, false] } else { vec![false, true] };
-        for is_baseline in variants {
-            let (session, engine) = native_session();
-            if is_baseline {
-                engine.execute_script_function(baseline.as_ref().unwrap(), "install", &options(), &BTreeMap::new(), None, false, None).await.unwrap();
-            }
-            let mut stream = session.updates().unwrap();
-            let mut initial = command("initial", Some(if is_baseline { baseline_source.clone() } else { source.clone() }), None, None);
-            initial.runtimeOptions.insert("state".into(), state.clone());
-            let started = std::time::Instant::now();
-            session.execute(initial).await;
-            let initial_ms = started.elapsed().as_secs_f64() * 1000.0;
-            let mut events = drain(&mut stream);
-            assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
-            let mut store = ToolPkgComposeDslNodeStore::default();
-            for event in &events { if let Some(update) = &event.update { store.apply(update.clone()).unwrap(); } }
-            let inspect = "exports.inspect = function() { const b = globalThis.__operit_compose_bundle; const c = b.memoStore['native-sidebar-current'].current; return b.stateStore['native-sidebar-state'].context === JSON.stringify({input:c.input,chats:c.chatSidebar.chats}); };";
-            assert_eq!(engine.execute_script_function(inspect, "inspect", &options(), &BTreeMap::new(), None, false, None).await.unwrap().unwrap(), "true",
-                "prepared catalog must match the validated input, without fallback reconciliation");
-            let list = store.root().unwrap();
-            assert_eq!(list.props["viewport"]["itemCount"], Value::from(103), "the fixture must contain an expanded catalog");
-            let action = list.props["viewport"]["onRangeChanged"]["__actionId"].as_str().unwrap().to_owned();
-            let initial_nodes = store.snapshot().unwrap().upserts.len();
-            let mut shifts = Vec::new();
-            for shift in 1..=20 {
-                let first = shift * 2;
-                let started = std::time::Instant::now();
-                session.execute(command("shift", None, Some(action.clone()),
-                    Some(serde_json::json!({"firstIndex":first,"lastIndex":first+24})))).await;
-                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-                let changed = drain(&mut stream);
-                assert!(changed.iter().all(|event| event.error.is_none()), "{changed:?}");
-                let upserts: usize = changed.iter().filter_map(|event| event.update.as_ref()).map(|update| update.upserts.len()).sum();
-                for event in &changed { if let Some(update) = &event.update { store.apply(update.clone()).unwrap(); } }
-                let snapshot = store.snapshot().unwrap();
-                for index in first-2..first+22 {
-                    assert!(snapshot.upserts.iter().any(|node| node.props.get("key") == Some(&Value::from(format!("sidebar-chat-title-chat-{index}")))
-                        && node.props.get("text") == Some(&Value::from(format!("Benchmark chat {index}")))), "missing or stale chat {index}");
-                }
-                let records: BTreeMap<_, _> = snapshot.upserts.iter().map(|node| (&node.id, node)).collect();
-                for node in records.values() {
-                    for child in node.children.iter().chain(node.slots.values().flatten()) { assert!(records.contains_key(child)); }
-                }
-                shifts.push(serde_json::json!({"elapsedMs":elapsed_ms,"upserts":upserts}));
-                events.extend(changed);
-            }
-            assert_revisions(&events);
-            results.push(serde_json::json!({"pair":pair,"variant":if is_baseline {"baseline"} else {"candidate"},
-                "initialMs":initial_ms,"initialNodes":initial_nodes,"shifts":shifts}));
-            session.close(); engine.destroy();
-        }
-    }
-    eprintln!("dsl_sidebar_window_probe {}", serde_json::json!({"profile":if cfg!(debug_assertions) {"debug"} else {"release"},
-        "scope":"shipped character sidebar, 100 fixture chats, 24-row window moves two rows; native scheduler + QuickJS + retained stream; excludes catalog IPC, Flutter, image IO and GPU", "samples":results}));
-}
-
 /// Keeps background avatar state and overlapping picker actions on one contiguous page stream.
 #[tokio::test(flavor = "current_thread")]
 async fn native_detached_avatar_load_and_concurrent_picker_actions_keep_all_revisions() {
     let (session, engine) = native_session();
-    let mut stream = session.updates().unwrap();
+    let mut stream = ProgramTestStream::new(session.updates().unwrap());
     let source = r#"exports.default = function(ctx) {
         const [avatar, setAvatar] = ctx.useState('avatar', 'initial');
         const [busy, setBusy] = ctx.useState('busy', false);
@@ -732,7 +626,7 @@ async fn native_detached_avatar_load_and_concurrent_picker_actions_keep_all_revi
     };"#;
     session.execute(command("render", Some(source.into()), None, None)).await;
     let mut events = drain(&mut stream);
-    let actions = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.upserts)
+    let actions = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.views)
         .find(|node| node.nodeType == "Column").unwrap().props.clone();
     session.execute(command("avatar-load", None, Some(actions["load"]["__actionId"].as_str().unwrap().into()), None)).await;
     let mut tasks = Vec::new();
@@ -744,14 +638,14 @@ async fn native_detached_avatar_load_and_concurrent_picker_actions_keep_all_revi
     futures_util::future::join_all(tasks).await;
     events.extend(drain(&mut stream));
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while !events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.upserts)
+        while !events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.views)
             .any(|node| node.props.get("text").and_then(Value::as_str).is_some_and(|text| text.starts_with("background-7:"))) {
             events.push(stream.recv().await.expect("avatar owner must retain its stream"));
         }
     }).await.expect("background avatar load must finish");
     assert_revisions(&events);
-    let mut store = super::super::ToolPkgComposeDslNodeStore::ToolPkgComposeDslNodeStore::default();
-    for event in events { if let Some(update) = event.update { store.apply(update).unwrap(); } }
+    let mut store = super::super::ToolPkgComposeDslProgramStore::ToolPkgComposeDslProgramStore::default();
+    for event in events { if let Some(update) = event.update { store.apply_decoded(update.transaction).unwrap(); } }
     session.close(); engine.destroy();
 }
 
@@ -759,7 +653,7 @@ async fn native_detached_avatar_load_and_concurrent_picker_actions_keep_all_revi
 #[tokio::test(flavor = "current_thread")]
 async fn native_character_avatar_picker_keeps_all_retained_revisions() {
     let (session, engine) = native_session();
-    let mut stream = session.updates().unwrap();
+    let mut stream = ProgramTestStream::new(session.updates().unwrap());
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
     let source = std::fs::read_to_string(root.join("plugins/packages/buildin/character_cards/dist/ui/main/index.ui.js")).unwrap();
     let setup = r#"exports.install = function() {
@@ -800,7 +694,7 @@ async fn native_character_avatar_picker_keeps_all_retained_revisions() {
     session.execute(command("render", Some(source), None, None)).await;
     let mut events = drain(&mut stream);
     assert!(events.iter().all(|event| event.error.is_none()), "{events:?}");
-    let load = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.upserts)
+    let load = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.views)
         .find_map(|node| node.props.get("onLoad").and_then(|value| value["__actionId"].as_str())).unwrap().to_string();
     session.execute(command("load", None, Some(load), None)).await;
     events.extend(drain(&mut stream));
@@ -813,24 +707,24 @@ async fn native_character_avatar_picker_keeps_all_retained_revisions() {
     session.execute(command("open-editor", None, Some(open.into()), Some(serde_json::json!(["edit","card","avatar-card"])))).await;
     events.extend(drain(&mut stream));
     assert_revisions(&events);
-    let load_entity = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.upserts).rev()
+    let load_entity = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.views).rev()
         .find(|node| node.nodeType == "Dialog")
         .and_then(|node| node.props.get("onLoad")).and_then(|value| value["__actionId"].as_str()).unwrap().to_string();
     session.execute(command("load-entity", None, Some(load_entity), None)).await;
     events.extend(drain(&mut stream));
     for index in 0..3 {
         assert_revisions(&events);
-        let pick = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.upserts).rev()
+        let pick = events.iter().filter_map(|event| event.update.as_ref()).flat_map(|update| &update.views).rev()
             .find(|node| node.props.get("key").and_then(Value::as_str) == Some("entity-choose-avatar"))
             .and_then(|node| node.props.get("onClick")).and_then(|value| value["__actionId"].as_str()).unwrap().to_string();
         session.execute(command(&format!("pick-{index}"), None, Some(pick), None)).await;
         events.extend(drain(&mut stream));
     }
     assert_revisions(&events);
-    let mut store = super::super::ToolPkgComposeDslNodeStore::ToolPkgComposeDslNodeStore::default();
-    for event in events { if let Some(update) = event.update { store.apply(update).unwrap(); } }
-    let snapshot = store.snapshot().unwrap();
-    assert!(snapshot.upserts.iter().any(|node| node.props.get("key").and_then(Value::as_str) == Some("entity-edit-avatar") && node.props.get("uri").and_then(Value::as_str).is_some_and(|uri| uri.starts_with("/app/character-config/avatars/"))), "avatar selection must finish");
+    let mut store = super::super::ToolPkgComposeDslProgramStore::ToolPkgComposeDslProgramStore::default();
+    for event in events { if let Some(update) = event.update { store.apply_decoded(update.transaction).unwrap(); } }
+    let snapshot = inspect_programs(&store);
+    assert!(snapshot.views.iter().any(|node| node.props.get("key").and_then(Value::as_str) == Some("entity-edit-avatar") && node.props.get("uri").and_then(Value::as_str).is_some_and(|uri| uri.starts_with("/app/character-config/avatars/"))), "avatar selection must finish");
     session.close(); engine.destroy();
 }
 
@@ -838,7 +732,7 @@ async fn native_character_avatar_picker_keeps_all_retained_revisions() {
 #[tokio::test(flavor = "current_thread")]
 async fn native_initial_effect_publishes_after_render_completion() {
     let (session, engine) = native_session();
-    let mut stream = session.updates().unwrap();
+    let mut stream = ProgramTestStream::new(session.updates().unwrap());
     let source = r#"exports.default = function(ctx) {
         const [count, setCount] = ctx.useState('count', 0);
         ctx.useEffect('initial-watch', function() {
@@ -852,9 +746,9 @@ async fn native_initial_effect_publishes_after_render_completion() {
     assert!(events.iter().any(|event| event.phase == "complete"));
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            let event = stream.receiver.recv().await.expect("the initial effect must keep the session observable");
+            let event = stream.recv().await.expect("the initial effect must keep the session observable");
             assert!(event.error.is_none(), "{event:?}");
-            let changed = event.update.as_ref().is_some_and(|update| update.upserts.iter().any(|node| node.props.get("text") == Some(&Value::String("1".into()))));
+            let changed = event.update.as_ref().is_some_and(|update| update.views.iter().any(|node| node.props.get("text") == Some(&Value::String("1".into()))));
             if changed {
                 assert_eq!(event.requestId, "initial-owner");
                 assert_eq!(event.phase, "intermediate");

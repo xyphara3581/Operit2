@@ -1,4 +1,5 @@
 import '../support/compose_session_fixture.dart';
+import 'package:operit2/core/compose/compose_program_buffer.dart';
 import 'package:operit2/core/application/PluginHotReload.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -2322,7 +2323,7 @@ void main() {
 
   for (final invalidType in ['Icon', 'IconButton']) {
     testWidgets(
-      'contains invalid plugin $invalidType without breaking sibling actions',
+      'reports invalid plugin $invalidType and preserves sibling actions',
       (tester) async {
         final bridge = _ToolPkgDslTestBridge(
           renderResult: (count) => jsonEncode({
@@ -2332,13 +2333,17 @@ void main() {
               children: [
                 _node('Text', props: {'text': 'Healthy sibling $count'}),
                 _node(
-                  invalidType,
-                  props: {
-                    'name': 'not_a_material_icon',
-                    'icon': 'not_a_material_icon',
-                    'width': 32,
-                    'height': 32,
-                  },
+                  'Box',
+                  props: {'width': 32, 'height': 32},
+                  children: [
+                    _node(
+                      invalidType,
+                      props: {
+                        'name': 'not_a_material_icon',
+                        'icon': 'not_a_material_icon',
+                      },
+                    ),
+                  ],
                 ),
                 _node(
                   'IconButton',
@@ -2353,13 +2358,13 @@ void main() {
         );
         await tester.pumpWidget(_screen(bridge));
         await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-        expect(find.byType(ErrorWidget), findsNothing);
+        expect(tester.takeException(), isArgumentError);
+        expect(find.byType(ErrorWidget), findsOneWidget);
         expect(find.text('Healthy sibling 0'), findsOneWidget);
         await tester.tap(find.byIcon(Icons.add));
         await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-        expect(find.byType(ErrorWidget), findsNothing);
+        expect(tester.takeException(), isArgumentError);
+        expect(find.byType(ErrorWidget), findsOneWidget);
         expect(find.text('Healthy sibling 1'), findsOneWidget);
       },
     );
@@ -2899,15 +2904,20 @@ class _ToolPkgDslTestBridge extends OperitRuntimeBridge {
 
       /// Publishes a flat commit and routes side effects only on the final response.
       void emit(String phase) {
+        final update = composeFixtureUpdate(
+          tree,
+          ++session.revision,
+          reset: session.revision == 1,
+          previousIds: session.sourceIds,
+        );
+        session.sourceIds = ComposeProgramBuffer(
+          update.buffer,
+        ).transaction.instances.map((instance) => instance.id).toSet();
         session.emit(
           core_proxy.ToolPkgComposeDslEvent(
             requestId: command.requestId,
             phase: phase,
-            update: composeFixtureUpdate(
-              tree,
-              ++session.revision,
-              reset: session.revision == 1,
-            ),
+            update: update,
             actionResult: phase == 'final' ? result['actionResult'] : null,
             navigationCommands:
                 phase == 'final' && result.containsKey('navigationCommands')
@@ -3026,6 +3036,7 @@ class _DslFixtureSession {
       StreamController<core_proxy.ToolPkgComposeDslEvent>.broadcast();
   String target = '';
   int revision = 0;
+  Set<String> sourceIds = {};
 
   /// Publishes only while the fixture session remains open.
   void emit(core_proxy.ToolPkgComposeDslEvent event) {
