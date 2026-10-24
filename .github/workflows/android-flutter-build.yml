@@ -77,6 +77,7 @@ jobs:
     env:
       V8_FROM_SOURCE: "1"
       LIBCLANG_PATH: /usr/lib/llvm-21/lib
+      EXTRA_GN_ARGS: 'android_ndk_version="r26c"'
       CARGO_TARGET_DIR: ${{ github.workspace }}/target/rusty-v8-android-source
 
     steps:
