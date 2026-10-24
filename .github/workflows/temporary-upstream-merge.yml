@@ -1,0 +1,40 @@
+name: Temporary upstream merge for integration branch
+
+on:
+  push:
+    branches:
+      - agent/upstream-sync-shell-refresh-perf-20261024
+    paths:
+      - .github/workflows/temporary-upstream-merge.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-upstream-merge-shell-refresh
+  cancel-in-progress: false
+
+jobs:
+  merge-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout integration branch with history
+        uses: actions/checkout@v4
+        with:
+          ref: agent/upstream-sync-shell-refresh-perf-20261024
+          fetch-depth: 0
+
+      - name: Merge upstream main without overwriting local fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/AAswordman/Operit2.git
+          git fetch upstream main
+          echo "Integration branch before merge: $(git rev-parse HEAD)"
+          echo "Upstream main: $(git rev-parse upstream/main)"
+          git merge --no-edit --no-ff upstream/main
+          echo "Merge completed: $(git rev-parse HEAD)"
+          git push origin HEAD:refs/heads/agent/upstream-sync-shell-refresh-perf-20261024
