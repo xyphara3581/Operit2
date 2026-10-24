@@ -120,25 +120,26 @@ jobs:
           cargo fetch --manifest-path .ci-tools/rusty-v8-android/Cargo.toml
           python3 - <<'PY'
           from pathlib import Path
-          import os
           import glob
+          import os
           roots = glob.glob(os.path.expanduser("~/.cargo/registry/src/*/v8-152.2.0"))
           if not roots:
               raise SystemExit("v8-152.2.0 source was not downloaded by cargo fetch")
-          build_file = Path(roots[0]) / "build/config/android/BUILD.gn"
-          if not build_file.is_file():
-              raise SystemExit(f"Expected Android GN file not found: {build_file}")
-          source = build_file.read_text()
-          import_line = 'import("//build/config/gclient_args.gni")'
-          if import_line not in source:
-              android_config = 'import("//build/config/android/config.gni")'
-              if android_config not in source:
-                  raise SystemExit("Cannot safely patch Android GN imports: config.gni import missing")
-              source = source.replace(android_config, android_config + "\n" + import_line, 1)
-              build_file.write_text(source)
-              print("Patched missing gclient_args.gni import for android_ndk_version")
-          else:
-              print("gclient_args.gni import already present")
+          build_rs = Path(roots[0]) / "build.rs"
+          source = build_rs.read_text()
+          needle = "fn run_gn_gen(gn_args: &[String]) {\\n  let dirs = get_dirs();\\n"
+          if needle not in source:
+              raise SystemExit("Could not find rusty_v8 GN generation hook to patch")
+          patch = """  let gclient_args_path = dirs.root.join("build/config/gclient_args.gni");
+          let mut gclient_args = fs::read_to_string(&gclient_args_path).unwrap_or_default();
+          if !gclient_args.contains("android_ndk_version =") {
+            gclient_args.push_str("\\ndeclare_args() {\\n  android_ndk_version = \\"2@30.0.16248370\\"\\n}\\n");
+            fs::write(&gclient_args_path, gclient_args).expect("failed to provide android_ndk_version to GN");
+          }
+          """
+          source = source.replace(needle, needle + patch, 1)
+          build_rs.write_text(source)
+          print("Patched rusty_v8 source build to declare Chromium's Android NDK GN argument")
           PY
           cargo build --manifest-path .ci-tools/rusty-v8-android/Cargo.toml --target aarch64-linux-android --release
           build_root="$CARGO_TARGET_DIR/aarch64-linux-android/release/gn_out"
