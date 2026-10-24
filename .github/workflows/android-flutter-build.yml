@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - agent/fix-android-shell-exitcode-timeout
+      - agent/upstream-sync-shell-refresh-perf-20261024
 
 permissions:
   contents: read
