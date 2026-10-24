@@ -136,6 +136,11 @@ jobs:
             gclient_args.push_str("\\ndeclare_args() {\\n  android_ndk_version = \\"2@30.0.16248370\\"\\n}\\n");
             fs::write(&gclient_args_path, gclient_args).expect("failed to provide android_ndk_version to GN");
           }
+          let pydeps_file = dirs.root.join("build/android/pylib/results/presentation/test_results_presentation.pydeps");
+          if !pydeps_file.exists() {
+            fs::create_dir_all(pydeps_file.parent().unwrap()).expect("failed to create Android pydeps directory");
+            fs::write(&pydeps_file, "").expect("failed to provide Android test pydeps placeholder");
+          }
           """
           source = source.replace(needle, needle + patch, 1)
           build_rs.write_text(source)
