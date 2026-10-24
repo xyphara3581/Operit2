@@ -134,7 +134,7 @@ jobs:
               android_config = 'import("//build/config/android/config.gni")'
               if android_config not in source:
                   raise SystemExit("Cannot safely patch Android GN imports: config.gni import missing")
-              source = source.replace(android_config, android_config + "\\n" + import_line, 1)
+              source = source.replace(android_config, android_config + "\n" + import_line, 1)
               build_file.write_text(source)
               print("Patched missing gclient_args.gni import for android_ndk_version")
           else:
