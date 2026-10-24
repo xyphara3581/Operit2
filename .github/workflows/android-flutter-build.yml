@@ -171,6 +171,9 @@ jobs:
           build_rs.write_text(source)
           print("Patched rusty_v8 source build to declare Chromium's Android NDK GN argument")
           PY
+          v8_root="$(find "$HOME/.cargo/registry/src" -maxdepth 3 -type d -name 'v8-152.2.0' -print -quit)"
+          test -n "$v8_root"
+          python3 "$v8_root/build/linux/sysroot_scripts/install-sysroot.py" --arch=amd64
           cargo build --manifest-path .ci-tools/rusty-v8-android/Cargo.toml --target aarch64-linux-android --release
           build_root="$CARGO_TARGET_DIR/aarch64-linux-android/release/gn_out"
           lib="$build_root/obj/librusty_v8.a"
