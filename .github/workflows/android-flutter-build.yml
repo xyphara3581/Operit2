@@ -282,6 +282,55 @@ jobs:
           }
           python tools/build_scripts/build_flutter_android.py --build-name $version[0].Groups[1].Value --build-number $version[0].Groups[2].Value --enforce-lockfile
 
+      - name: Verify native C++ ABI symbols in the bridge library
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $apk = Get-ChildItem -Path tools/release/dist -Filter 'operit2-app-android-arm64-v8a-*.apk' | Select-Object -First 1
+          if ($null -eq $apk) { throw 'APK not found for symbol verification' }
+          Write-Host "verifying $($apk.FullName)"
+
+          $work = Join-Path $env:RUNNER_TEMP 'abi-check'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          $zip = Join-Path $work 'app.apk'
+          Copy-Item $apk.FullName $zip
+          Expand-Archive -Path $zip -DestinationPath $work -Force
+
+          $so = Join-Path $work 'lib/arm64-v8a/liboperit_flutter_bridge.so'
+          if (-not (Test-Path $so)) { throw "liboperit_flutter_bridge.so missing from APK" }
+
+          $nm = Get-ChildItem -Path $env:ANDROID_NDK_HOME -Recurse -Filter 'llvm-nm.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $nm) {
+            $nm = Get-ChildItem -Path $env:ANDROID_NDK_ROOT -Recurse -Filter 'llvm-nm.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if ($null -eq $nm) { throw 'llvm-nm not found in the NDK' }
+          Write-Host "using $($nm.FullName)"
+
+          $symbols = & $nm.FullName --undefined-only --dynamic $so 2>&1 | Out-String
+          Write-Host '--- undefined C++ ABI symbols ---'
+          Write-Host $symbols
+
+          $targets = @(
+            '_ZTISt13runtime_error',
+            '_ZTVSt13runtime_error',
+            '__cxa_throw',
+            '__cxa_allocate_exception',
+            '_ZTISt9exception',
+            '_ZTISt9bad_alloc'
+          )
+          $missing = @()
+          foreach ($t in $targets) {
+            if ($symbols -match [regex]::Escape($t)) { $missing += $t }
+          }
+          if ($missing.Count -gt 0) {
+            "## FAILED: unresolved C++ ABI symbols" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            $missing | ForEach-Object { "- ``$_``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+            throw "unresolved C++ ABI symbols: $($missing -join ', ')"
+          }
+
+          Write-Host 'C++ ABI symbols resolved in the bridge library'
+          "## C++ ABI symbol check passed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
         with:
