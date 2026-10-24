@@ -7,6 +7,7 @@ on:
     branches:
       - agent/fix-android-shell-exitcode-timeout
       - agent/upstream-sync-shell-refresh-perf-20261024
+      - agent/upstream-sync-shell-refresh-perf-20261024-r2
 
 permissions:
   contents: read
@@ -70,8 +71,73 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  build-v8-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      V8_FROM_SOURCE: "1"
+      LIBCLANG_PATH: /usr/lib/llvm-21/lib
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/rusty-v8-android-source
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust and Android target
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          targets: aarch64-linux-android
+
+      - name: Install V8 source-build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl git gzip libglib2.0-dev pkg-config python3 unzip
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          sudo apt-get install -y libclang-21-dev
+          test -f "$LIBCLANG_PATH/libclang.so"
+
+      - name: Build Android ARM64 V8 from source
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-tools/rusty-v8-android/src
+          cat > .ci-tools/rusty-v8-android/Cargo.toml <<'EOF'
+          [package]
+          name = "operit-rusty-v8-android-artifact"
+          version = "0.1.0"
+          edition = "2021"
+
+          [workspace]
+
+          [dependencies]
+          v8 = "=152.2.0"
+          EOF
+          cat > .ci-tools/rusty-v8-android/src/main.rs <<'EOF'
+          fn main() {}
+          EOF
+          cargo build --manifest-path .ci-tools/rusty-v8-android/Cargo.toml --target aarch64-linux-android --release
+          build_root="$CARGO_TARGET_DIR/aarch64-linux-android/release/gn_out"
+          lib="$build_root/obj/librusty_v8.a"
+          binding="$build_root/src_binding.rs"
+          test -s "$lib"
+          test -s "$binding"
+          mkdir -p target/operit-build-tools/rusty-v8-android
+          gzip -n -c "$lib" > target/operit-build-tools/rusty-v8-android/librusty_v8_release_aarch64-linux-android.a.gz
+          cp "$binding" target/operit-build-tools/rusty-v8-android/src_binding_release_aarch64-linux-android.rs
+          ls -lh target/operit-build-tools/rusty-v8-android
+
+      - name: Upload Android V8 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: operit2-rusty-v8-android-${{ github.sha }}
+          path: target/operit-build-tools/rusty-v8-android/*
+          if-no-files-found: error
+          retention-days: 1
+
   build-android:
-    needs: build-android-runtime
+    needs: [build-android-runtime, build-v8-android]
     runs-on: windows-2025
     timeout-minutes: 90
     env:
@@ -88,6 +154,12 @@ jobs:
         with:
           name: operit2-android-runtime-${{ github.sha }}
           path: apps/flutter/app/android/app/src/main
+
+      - name: Download Android V8 source-build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: operit2-rusty-v8-android-${{ github.sha }}
+          path: target/operit-build-tools/rusty-v8-android
 
       - name: Install bootstrap Dart
         uses: dart-lang/setup-dart@v1
@@ -276,6 +348,8 @@ jobs:
 
       - name: Build and package Android app
         shell: pwsh
+        env:
+          RUSTY_V8_ARCHIVE: "${{ github.workspace }}/target/operit-build-tools/rusty-v8-android"
         run: |
           $version = (Select-String -Path apps/flutter/app/pubspec.yaml -Pattern '^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$').Matches
           if ($version.Count -ne 1) {
